@@ -107,6 +107,7 @@ cryptography==45.0.4
     #   msal
     #   pyjwt
     #   pyopenssl
+python-docx>=0.8.11
 dataclasses-json==0.6.7
     # via langchain-community
 decorator==5.2.1
@@ -689,3 +690,4 @@ zipp==3.23.0
     # via importlib-metadata
 zstandard==0.23.0
     # via langsmith 
+google-generativeai==0.1.0
