@@ -82,6 +82,7 @@ The possible intents are:
 - "get_linkedin": For requests specifically for the LinkedIn URL.
 - "get_github": For requests specifically for the GitHub URL.
 - "get_leetcode": For requests specifically for the LeetCode URL.
+- "get_relocation": For questions about being open to relocation.
 - "rag_query": For any other question about skills, experience, projects, work, or any topic that requires looking up information. This is the default for substantive questions.
 
 Rules:
@@ -102,6 +103,14 @@ User message: "what is your special talent and tell me about your recent work an
 Response: {{"intents": ["get_github", "rag_query"], "rag_query_text": "what is your special talent and what is your recent work, including projects from github?"}}
 
 Example 4:
+User message: "who are you?"
+Response: {{"intents": ["about_me"]}}
+
+Example 5:
+User message: "Are you open to relocation?"
+Response: {{"intents": ["get_relocation"]}}
+
+Example 6:
 User message: "give me your linkedin and github"
 Response: {{"intents": ["get_linkedin", "get_github"]}}
 
@@ -125,13 +134,13 @@ Response:
         ])
 
     def get_about_me(self):
-        return ("I am Venkatesh Narra, a Full-Stack Python Developer with a Master's in MIS. "
+        return ("I am Venkatesh Narra, a Full-Stack Python Developer with a Master's in Computer Science. "
                 "I specialize in building scalable AI-powered applications and backend systems using technologies like FastAPI, Django, and cloud services like AWS and Azure. "
                 "My work involves developing everything from data-intensive applications to multi-model chatbots. Feel free to ask about specific projects or skills!")
 
-    async def get_rag_answer(self, query):
+    async def get_rag_answer(self, query, history_for_rag):
         try:
-            response = await get_rag_response_async(query, self.full_text)
+            response = await get_rag_response_async(query, self.full_text, history_for_rag)
             if "I don't have enough information" in response:
                 record_unknown_question(query)
             return response
@@ -148,6 +157,9 @@ Response:
         route = await self.route_query(message)
         intents = route.get("intents", [])
         
+        # Format history for the RAG prompt
+        history_for_rag = "\n".join([f"User: {h[0]}\nAssistant: {h[1]}" for h in history])
+
         tasks = []
         for intent in intents:
             if intent == "greeting":
@@ -160,12 +172,14 @@ Response:
                 tasks.append(asyncio.create_task(asyncio.to_thread(lambda: "You can find my projects on GitHub: https://github.com/venkynarra")))
             elif intent == "get_leetcode":
                 tasks.append(asyncio.create_task(asyncio.to_thread(lambda: "My LeetCode profile is https://leetcode.com/u/pravnarri/")))
+            elif intent == "get_relocation":
+                tasks.append(asyncio.create_task(asyncio.to_thread(lambda: "Yes, I am actively open to relocating for the right opportunity.")))
             elif intent == "rag_query":
                 rag_query_text = route.get("rag_query_text", message)
-                tasks.append(self.get_rag_answer(rag_query_text))
+                tasks.append(self.get_rag_answer(rag_query_text, history_for_rag))
         
         if not tasks: # Fallback if routing fails
-             tasks.append(self.get_rag_answer(message))
+             tasks.append(self.get_rag_answer(message, history_for_rag))
 
         responses = await asyncio.gather(*tasks)
         return "\n\n".join(filter(None, responses))

@@ -44,34 +44,30 @@ def store_answer(conn, q, a):
     conn.commit()
 
 # ─── Async RAG Query ─────────────────────────────────────────────────────────
-async def get_rag_response_async(query: str, full_text: str):
+async def get_rag_response_async(query: str, full_text: str, history: str):
     conn = init_cache()
-    cached = get_cached_answer(conn, query)
+    # Cache key includes history to avoid incorrect hits on follow-up questions
+    cache_key = f"{query}|{history}"
+    cached = get_cached_answer(conn, cache_key)
     if cached:
         return cached
 
-    # Build index on the fly from the provided text
-    chunks = prepare_chunks(full_text)
-    if not chunks:
-        return "I don't have enough information to answer that question."
-        
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    vs = FAISS.from_texts(chunks, embeddings)
-    retriever = vs.as_retriever(search_kwargs={"k": 3})
-
+    retriever = load_vector_index().as_retriever(search_kwargs={"k": 5}) # Increased k for more context
     docs      = retriever.invoke(query)
     context   = "\n\n".join(d.page_content for d in docs)
 
     prompt = (
         "You are a helpful AI assistant for Venkatesh Narra. You MUST speak in the first person, as if you ARE Venkatesh Narra (e.g., use 'I', 'my', 'me'). Your persona is professional, friendly, and an expert in your own career.\n\n"
-        "You must answer questions based ONLY on the information in the CONTEXT section. Do not use any outside knowledge.\n\n"
+        "You must answer questions based ONLY on the information in the CONTEXT section and the CONVERSATION HISTORY. Do not use any outside knowledge.\n\n"
         "### INSTRUCTIONS FOR ANSWERING ###\n"
-        "1.  **Synthesize Information:** Combine details from all relevant sections (Professional Experience, Resume, Detailed Projects, GitHub) to form a complete answer. Do not just copy-paste one section.\n"
-        "2.  **For 'why hire me' or 'special talent' questions:** Summarize your key strengths, mention your experience with building full-stack AI applications, and highlight your passion for system design and problem-solving. Be persuasive and confident.\n"
-        "3.  **For 'what are your skills' questions:** List your technical skills clearly. You can group them (e.g., Languages, Frameworks, Cloud/DevOps, AI/ML).\n"
-        "4.  **For 'recent work/projects' questions:** Focus on the 'Veritis Group Inc.' experience from the context, as this is your most recent work.\n"
-        "5.  **For past projects:** Refer to the TCS loan platform and other projects listed in the GitHub section.\n\n"
+        "1.  **Use Conversation History:** If the user's question is a follow-up (e.g., 'tell me more about that', 'why?'), use the history to understand the original topic.\n"
+        "2.  **Synthesize Information:** Combine details from all relevant sections (Professional Experience, Resume, Detailed Projects, GitHub) to form a complete answer. Do not just copy-paste one section.\n"
+        "3.  **For 'why hire me' or behavioral questions:** Answer using the STAR method (Situation, Task, Action, Result) by drawing from my project experiences. Be persuasive and confident.\n"
+        "4.  **For 'what are your skills' questions:** List technical skills clearly, grouped by category (e.g., Languages, Frameworks, Cloud/DevOps, AI/ML).\n"
+        "5.  **For 'recent work/projects' questions:** Focus on the 'Veritis Group Inc.' experience and the 'AI-Powered Testing Agent' and 'Multi-Model AI Chat Platform' projects. Synthesize details from all these sections to give a full picture of my latest work.\n"
+        "6.  **For past projects:** Refer to the TCS loan platform and other projects listed in the GitHub section.\n\n"
         "If the information to answer the question is NOT in the context, you MUST respond with EXACTLY this phrase: 'I don't have enough information on that. Please drop your email, and I'll get back to you.'\n\n"
+        f"CONVERSATION HISTORY:\n---------------------\n{history}\n---------------------\n\n"
         f"CONTEXT:\n---------------------\n{context}\n---------------------\n\n"
         f"Question: {query}\n"
         "Answer (as Venkatesh Narra):"
@@ -85,5 +81,5 @@ async def get_rag_response_async(query: str, full_text: str):
     resp = await loop.run_in_executor(None, gem.generate_content, prompt)
     answer = resp.text.strip()
 
-    store_answer(conn, query, answer)
+    store_answer(conn, cache_key, answer)
     return answer
