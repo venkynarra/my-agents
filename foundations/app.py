@@ -1,154 +1,190 @@
 from dotenv import load_dotenv
-import os
-import requests
+import os, requests, gradio as gr, asyncio, spacy, random, json
+import google.generativeai as genai
 from pypdf import PdfReader
 from docx import Document
-import gradio as gr
-import google.generativeai as genai
+from rag_engine import build_vector_index, get_rag_response_async
 
-# 🔐 Load .env variables
+# ─── Environment & AI setup ────────────────────────────────────────────────────
 load_dotenv(override=True)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+PUSHOVER_TOKEN = os.getenv("PUSHOVER_TOKEN")
+PUSHOVER_USER  = os.getenv("PUSHOVER_USER")
 
-# ✅ Configure Gemini API
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-1.5-pro")
+# Load NLP model
+nlp = spacy.load("en_core_web_sm")
 
-# 📬 Pushover Logging
-def push(text):
+def push(text: str):
+    """Send a pushover notification on fallback or email submit."""
     requests.post(
         "https://api.pushover.net/1/messages.json",
-        data={
-            "token": os.getenv("PUSHOVER_TOKEN"),
-            "user": os.getenv("PUSHOVER_USER"),
-            "message": text,
-        }
+        data={"token": PUSHOVER_TOKEN, "user": PUSHOVER_USER, "message": text}
     )
 
-def record_user_details(email, name="Name not provided", notes="not provided"):
-    push(f"Recording {name} with email {email} and notes {notes}")
-    return {"recorded": "ok"}
+def record_user_details(email, name="Not Provided", notes="Not Provided"):
+    push(f"Email from {name}: {email} | Notes: {notes}")
+    return {"status": "ok"}
 
 def record_unknown_question(question):
-    push(f"Recording {question}")
-    return {"recorded": "ok"}
+    push(f"Unknown or fallback: {question}")
+    return {"status": "ok"}
 
-# 👤 Main Agent Class
+# ─── Main agent ────────────────────────────────────────────────────────────────
 class Me:
     def __init__(self):
-        self.name = "Venkatesh Narra"
-        self.linkedin = self.extract_pdf_text("../agent_knowledge/Profile.pdf")
-        self.resume = self.extract_pdf_text("../agent_knowledge/resume.pdf")
-        self.readmes = self.extract_docx_text("../agent_knowledge/github_readme.docx")
-        self.prompt = self.system_prompt()
+        self.linkedin = self.read_text_file("../agent_knowledge/profile.md")
+        self.resume   = self.read_text_file("../agent_knowledge/resume.md")
+        self.readmes  = self.read_text_file("../agent_knowledge/github_readme.md")
+        self.projects = self.read_text_file("../agent_knowledge/experience_and_projects.md")
+
+        self.full_text = (
+            f"--- START: Resume ---\n{self.resume}\n--- END: Resume ---\n\n"
+            f"--- START: LinkedIn Profile ---\n{self.linkedin}\n--- END: LinkedIn Profile ---\n\n"
+            f"--- START: GitHub READMEs ---\n{self.readmes}\n--- END: GitHub READMEs ---\n\n"
+            f"--- START: Detailed Projects & Experience ---\n{self.projects}\n--- END: Detailed Projects & Experience ---"
+        )
+        build_vector_index(self.full_text)
+
+    def read_text_file(self, path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return f.read()
+        except Exception as e:
+            print(f"Error reading text file {path}: {e}")
+            return ""
 
     def extract_pdf_text(self, path):
-        reader = PdfReader(path)
-        return "".join(page.extract_text() or "" for page in reader.pages)
+        # This function is no longer needed here but kept for potential future use
+        try:
+            return "".join(p.extract_text() or "" for p in PdfReader(path).pages)
+        except Exception as e:
+            print(f"Error reading pdf {path}: {e}")
+            return ""
 
     def extract_docx_text(self, path):
-        doc = Document(path)
-        return "\n".join([para.text for para in doc.paragraphs if para.text.strip()])
-
-    def system_prompt(self):
-        return f"""
-You are acting as {self.name}, a professional AI assistant. Answer clearly and helpfully based on:
-- Resume
-- LinkedIn Profile
-- GitHub README and Projects
-
-You are expected to:
-- Handle technical, behavioral, and project-related questions
-- Politely reject irrelevant or off-topic questions
-- Offer links to GitHub, LinkedIn, and LeetCode when requested
-- Log emails using record_user_details(email, name, notes)
-- Log unknown questions using record_unknown_question(question)
-
-Resume:
-{self.resume}
-
-LinkedIn:
-{self.linkedin}
-
-GitHub Projects:
-{self.readmes}
-"""
-
-    def chat(self, message, history):
-        user_input = message.lower().strip()
-
-        # 👋 Greetings
-        if user_input in ["hi", "hello", "hey", "yo", "hii", "hai"]:
-            return "Hi there! Feel free to ask me about my work, skills, or projects."
-
-        # 🎯 Explicit intro
-        if "intro" in user_input or "tell me about yourself" in user_input:
-            return (
-                "**Introduction:**\n"
-                "I'm Venkatesh Narra, a full-stack Python developer with a Master’s in Management Information Systems.\n"
-                "I specialize in building scalable backend APIs using FastAPI, Django, and Flask, and frontend interfaces using React and TypeScript.\n"
-                "I’ve worked extensively with cloud services (AWS, Azure), DevOps pipelines, and AI model integrations (Gemini, Cohere, Mistral).\n\n"
-                "**Current Focus:**\n"
-                "- Building a multi-model AI assistant (Gemini, Cohere, Mistral)\n"
-                "- Implementing Salesforce & ServiceNow RAG workflows with FastAPI + SQLite\n"
-                "- Designing an automated testing agent with PDF logging and LLM response verification"
-            )
-
-        # ⚙️ Quick Info Triggers
-        if "github" in user_input:
-            return "🔗 GitHub: https://github.com/venkynarra"
-
-        if "linkedin" in user_input:
-            return "🔗 LinkedIn: https://www.linkedin.com/in/venkateswara-narra-91170b34a/"
-
-        if "leetcode" in user_input:
-            return "🔗 LeetCode: https://leetcode.com/u/pravnarri/"
-        if "all profile" in user_input or "profile urls" in user_input or "your profiles" in user_input:
-            return (
-            "Certainly! Here are my professional profiles:\n\n"
-            "🔗 GitHub: https://github.com/venkynarra\n"
-            "🔗 LinkedIn: https://www.linkedin.com/in/venkateswara-narra-91170b34a/\n"
-            "🔗 LeetCode: https://leetcode.com/u/pravnarri/"
-                 )
-
-
-        if "skills" in user_input or "tech stack" in user_input:
-            return (
-                "**Tech Stack:**\n"
-                "- **Languages:** Python, JavaScript, TypeScript, Java\n"
-                "- **Frameworks:** FastAPI, Flask, Django, Spring Boot, React, Node.js\n"
-                "- **Cloud & DevOps:** AWS, Azure, Docker, GitHub Actions\n"
-                "- **Databases:** PostgreSQL, MongoDB, SQLite\n"
-                "- **AI & Tools:** Gemini, Cohere, Mistral, LoRA, QLoRA"
-            )
-
-        if "current project" in user_input or "what are you working on" in user_input:
-            return (
-                "**Current Projects:**\n"
-                "1. **AI Testing Agent** – Validates REST endpoints and UI flows with Gemini-based output validation and auto-generated PDF reports.\n"
-                "2. **Multi-Model Chat App** – CLI and Web-based assistant comparing Gemini, Mistral, and Cohere responses in real-time with fallback and retry logic.\n"
-                "3. **Salesforce RAG Platform** – FastAPI backend with SQLite vector store that indexes and retrieves Salesforce/ServiceNow records for chat-based exploration."
-            )
-
-        if any(phrase in user_input for phrase in ["your name", "who are you"]):
-            return "I'm Venkatesh Narra – a full-stack developer and AI platform engineer."
-
-        # 🚫 Irrelevant topics
-        if any(phrase in user_input for phrase in [
-            "joke", "movie", "celebrity", "weather", "song", "love", "married", "politics", "age", "food", "drink"
-        ]):
-            return "Let’s stay focused on professional topics like my experience, projects, or skills."
-
-        # 🧠 Gemini fallback for open-ended or behavioral/technical questions
+        # This function is no longer needed here but kept for potential future use
         try:
-            chat = model.start_chat(history=[{"role": "user", "parts": [self.prompt]}])
-            response = chat.send_message(message)
-            return response.text
+            return "\n".join(p.text for p in Document(path).paragraphs if p.text.strip())
         except Exception as e:
-            record_unknown_question(message)
-            return "Something went wrong processing that. Please ask about my work or experience."
+            print(f"Error reading docx {path}: {e}")
+            return ""
 
+    async def route_query(self, query):
+        """Uses an LLM to route the user's query to the correct tool or response."""
+        prompt = f"""
+You are an intelligent query routing agent. Your task is to analyze a user's message and identify all distinct user intents. You must respond with a JSON object containing a list of these intents.
 
-# 🟢 Gradio Launch
+The possible intents are:
+- "greeting": For any kind of greeting (e.g., "hello", "how are you").
+- "about_me": For general questions about Venkatesh Narra (e.g., "tell me about yourself", "who are you").
+- "get_linkedin": For requests specifically for the LinkedIn URL.
+- "get_github": For requests specifically for the GitHub URL.
+- "get_leetcode": For requests specifically for the LeetCode URL.
+- "rag_query": For any other question about skills, experience, projects, work, or any topic that requires looking up information. This is the default for substantive questions.
+
+Rules:
+- A single message can have multiple intents. Include all of them.
+- For a "rag_query" intent, you MUST also include a "rag_query_text" field in the JSON, containing the part of the user message that needs to be answered by the retrieval system.
+- If a message contains multiple, distinct topics for the RAG system, combine them into a single, coherent "rag_query_text".
+
+Example 1:
+User message: "hey, how's it going?"
+Response: {{"intents": ["greeting"]}}
+
+Example 2:
+User message: "tell me about your work and give me your github profile"
+Response: {{"intents": ["get_github", "rag_query"], "rag_query_text": "tell me about your work"}}
+
+Example 3:
+User message: "what is your special talent and tell me about your recent work and give me your github projects"
+Response: {{"intents": ["get_github", "rag_query"], "rag_query_text": "what is your special talent and what is your recent work, including projects from github?"}}
+
+Example 4:
+User message: "give me your linkedin and github"
+Response: {{"intents": ["get_linkedin", "get_github"]}}
+
+User message: "{query}"
+Response:
+"""
+        try:
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = await model.generate_content_async(prompt)
+            clean_response = response.text.strip().replace("```json", "").replace("```", "").strip()
+            return json.loads(clean_response)
+        except (Exception, json.JSONDecodeError) as e:
+            print(f"Error routing query: {e}")
+            return {"intents": ["rag_query"], "rag_query_text": query} # Fallback
+
+    def get_greeting(self):
+        return random.choice([
+            "Hi there! How can I help you today?",
+            "Hello! Feel free to ask me about my work, skills, or projects.",
+            "Hey! What can I help you with?",
+        ])
+
+    def get_about_me(self):
+        return ("I am Venkatesh Narra, a Full-Stack Python Developer with a Master's in MIS. "
+                "I specialize in building scalable AI-powered applications and backend systems using technologies like FastAPI, Django, and cloud services like AWS and Azure. "
+                "My work involves developing everything from data-intensive applications to multi-model chatbots. Feel free to ask about specific projects or skills!")
+
+    async def get_rag_answer(self, query):
+        try:
+            response = await get_rag_response_async(query, self.full_text)
+            if "I don't have enough information" in response:
+                record_unknown_question(query)
+            return response
+        except Exception as e:
+            print(f"Error during RAG lookup: {e}")
+            record_unknown_question(f"SYSTEM ERROR on query: {query}")
+            return "Sorry, I'm having a little trouble right now. Please try again in a moment."
+
+    async def chat(self, message, history):
+        if "@" in message and "." in message:
+            record_user_details(email=message, notes="Email submitted via chat")
+            return "Got your email. I'll follow up soon."
+        
+        route = await self.route_query(message)
+        intents = route.get("intents", [])
+        
+        tasks = []
+        for intent in intents:
+            if intent == "greeting":
+                tasks.append(asyncio.create_task(asyncio.to_thread(self.get_greeting)))
+            elif intent == "about_me":
+                tasks.append(asyncio.create_task(asyncio.to_thread(self.get_about_me)))
+            elif intent == "get_linkedin":
+                tasks.append(asyncio.create_task(asyncio.to_thread(lambda: "My LinkedIn profile is https://www.linkedin.com/in/venkateswara-narra-91170b34a/")))
+            elif intent == "get_github":
+                tasks.append(asyncio.create_task(asyncio.to_thread(lambda: "You can find my projects on GitHub: https://github.com/venkynarra")))
+            elif intent == "get_leetcode":
+                tasks.append(asyncio.create_task(asyncio.to_thread(lambda: "My LeetCode profile is https://leetcode.com/u/pravnarri/")))
+            elif intent == "rag_query":
+                rag_query_text = route.get("rag_query_text", message)
+                tasks.append(self.get_rag_answer(rag_query_text))
+        
+        if not tasks: # Fallback if routing fails
+             tasks.append(self.get_rag_answer(message))
+
+        responses = await asyncio.gather(*tasks)
+        return "\n\n".join(filter(None, responses))
+
+# ─── Launch ───────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    me = Me()
-    gr.ChatInterface(me.chat, type="messages").launch()
+    agent = Me()
+    gr.ChatInterface(
+        agent.chat,
+        title="Venkatesh Narra - AI Assistant",
+        description="""
+        Welcome! I am Venkatesh Narra's AI assistant.
+        You can ask me about my skills, projects, and professional experience.
+        Feel free to ask complex questions or multiple questions at once.
+        """,
+        examples=[
+            "Tell me about your work and provide me your linkedin url",
+            "what is your special talent and tell me about your recent work and give me your github projects",
+            "give me your linkedin and github profile"
+        ],
+        type="messages"
+    ).launch()
