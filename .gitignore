@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 response_cache.db
 rag_index/
+foundations/config.py
