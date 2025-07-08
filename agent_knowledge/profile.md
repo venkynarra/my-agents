@@ -1,9 +1,10 @@
    
 Contact
 vnarra@gmu.edu
-www.linkedin.com/in/
-venkateswara-narra-91170b34a
-(LinkedIn)
+www.linkedin.com/in/venkateswara-narra-91170b34a (LinkedIn)
+https://github.com/venkynarra (GitHub)
+https://leetcode.com/u/pravnarri/ (LeetCode)
+
 Top Skills
 Machine Learning
 Artificial Intelligence (AI)

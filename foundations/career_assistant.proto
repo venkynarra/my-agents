@@ -1,0 +1,80 @@
+syntax = "proto3";
+import "google/protobuf/empty.proto";
+
+package career_assistant;
+
+// The service definition for the Career Assistant AI.
+service CareerAssistant {
+  // Processes a user's query and returns a generated response
+  rpc ProcessQuery (QueryRequest) returns (QueryResponse) {}
+
+  // Submits a contact form entry
+  rpc SubmitContactForm(ContactFormRequest) returns (ContactFormResponse) {}
+
+  // Schedules a meeting
+  rpc ScheduleMeeting(MeetingRequest) returns (MeetingResponse) {}
+
+  // Retrieves analytics data
+  rpc GetAnalyticsData(google.protobuf.Empty) returns (AnalyticsResponse) {}
+  // Generates a professional profile summary
+  rpc GenerateProfile(google.protobuf.Empty) returns (ProfileResponse) {}
+}
+
+// The request message containing the user's query and history.
+message QueryRequest {
+  string query = 1;
+  repeated ChatMessage history = 2;
+}
+
+// A single chat message.
+message ChatMessage {
+    string role = 1;
+    string content = 2;
+}
+
+// The response message containing the assistant's reply.
+message QueryResponse {
+  string response = 1;
+}
+
+// === Contact Form Messages ===
+
+message ContactFormRequest {
+  string name = 1;
+  string email = 2;
+  string message = 3;
+}
+
+message ContactFormResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// === Meeting Scheduler Messages ===
+
+message MeetingRequest {
+  string email = 1;
+  string time = 2; // e.g., "2024-07-10T14:00:00Z"
+  string message = 3;
+}
+
+message MeetingResponse {
+  bool success = 1;
+  string message = 2;
+  string event_link = 3; // Link to the created calendar event
+}
+
+message ProfileResponse {
+    string content = 1;
+}
+
+message AnalyticsResponse {
+    repeated Interaction interactions = 1;
+}
+
+message Interaction {
+    string id = 1;
+    string query = 2;
+    string response = 3;
+    string timestamp = 4;
+} 
