@@ -1,48 +1,80 @@
 # foundations/rag_engine.py
-import logging
-from pathlib import Path
-import os
-from dotenv import load_dotenv
-from unstructured.chunking.title import chunk_by_title
-from unstructured.partition.md import partition_md
-import google.generativeai as genai
 import asyncio
-from sentence_transformers import SentenceTransformer
-from langchain.vectorstores import FAISS
-from langchain.docstore.document import Document
+import logging
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor
+from typing import List, Optional
+
+from langchain.chains import ConversationalRetrievalChain
+from langchain_community.document_loaders import DirectoryLoader, UnstructuredFileLoader
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from google.api_core.exceptions import PermissionDenied
+from .config import GEMINI_API_KEY
+
 
 # --- Environment & AI setup ──────────────────────────────────────────────────
 load_dotenv(override=True)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") # This line is removed as per the new_code, as the LLM is now directly instantiated.
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    # genai.configure(api_key=GEMINI_API_KEY) # This line is removed as per the new_code, as the LLM is now directly instantiated.
+    pass # Keep this line to avoid breaking the new_code, but it's no longer needed.
 
 # --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-class UnifiedRAG:
-    """A unified RAG engine that handles document loading, chunking, and querying."""
-    def __init__(self, index_path: Path):
-        self.index_path = index_path
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        self.documents = []
-        self.vector_store = None
+class RAGEngine:
+    def __init__(self, knowledge_base_dir: str):
+        self.knowledge_base_dir = knowledge_base_dir
+        self.vector_store: Optional[FAISS] = None
+        self.chain: Optional[ConversationalRetrievalChain] = None
+        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7)
+        self.embedding_model = HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2')
+        self._lock = asyncio.Lock()
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.documents: List[Document] = []
+        self.text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
-    def load_documents(self, file_paths: list[Path]):
+    async def _load_and_process_documents(self):
+        async with self._lock:
+            if not self.vector_store:
+                logger.info("Loading and processing documents for the first time.")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(self.executor, self.load_documents)
+                
+                if self.vector_store:
+                    logger.info("Vector store initialized.")
+                    self.chain = ConversationalRetrievalChain.from_llm(
+                        llm=self.llm,
+                        retriever=self.vector_store.as_retriever(),
+                        return_source_documents=True
+                    )
+                    logger.info("Conversational chain created.")
+                else:
+                    logger.error("Vector store could not be initialized. No documents were loaded or processed.")
+
+    def load_documents(self):
         """Loads and chunks documents from a list of file paths."""
-        logger.info(f"Building knowledge index from {len(file_paths)} files...")
+        logger.info(f"Building knowledge index from {len(self.knowledge_base_dir)} files...")
         all_chunks = []
-        for file in file_paths:
+        for file_path in self.knowledge_base_dir:
             try:
-                elements = partition_md(filename=str(file))
-                chunks = chunk_by_title(elements)
+                # Assuming DirectoryLoader can handle both files and directories
+                loader = DirectoryLoader(file_path, loader_cls=UnstructuredFileLoader)
+                documents = loader.load()
+                chunks = self.text_splitter.split_documents(documents)
                 for chunk in chunks:
-                    all_chunks.append(Document(page_content=str(chunk), metadata={"source": file.name}))
-                logger.info(f"📄 Processed {file.name}, created {len(chunks)} chunks.")
+                    all_chunks.append(chunk)
+                logger.info(f"📄 Processed {file_path}, created {len(chunks)} chunks.")
             except Exception as e:
-                logger.error(f"Failed to process {file.name}: {e}")
+                logger.error(f"Failed to process {file_path}: {e}")
         
         self.documents = all_chunks
         logger.info(f"✅ Knowledge index built with {len(self.documents)} total chunks.")
@@ -126,26 +158,32 @@ class UnifiedRAG:
         if not GEMINI_API_KEY:
             return "Error: Gemini API key not configured."
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
-            response = model.generate_content(prompt)
-            return response.text
+            response = self.llm.invoke(prompt)
+            return response.content
+        except PermissionDenied as e:
+            logger.error(f"💥 Google API Permission Denied: {e}", exc_info=True)
+            error_message = (
+                "Error: The Generative Language API is not enabled for this project. "
+                "Please enable it in your Google Cloud Console and try again."
+            )
+            return error_message
         except Exception as e:
             logger.error(f"💥 Error generating text with Gemini: {e}", exc_info=True)
             return "Error communicating with the generative model."
 
 
 # --- Async Wrappers for Gradio ---
-async def build_knowledge_index(file_paths: list, index_path: Path) -> UnifiedRAG:
+async def build_knowledge_index(file_paths: list, index_path: Path) -> RAGEngine:
     """Builds the RAG engine and knowledge index."""
-    rag = UnifiedRAG(index_path=index_path)
+    rag = RAGEngine(knowledge_base_dir=file_paths)
     # Run the synchronous document loading in a separate thread
-    await asyncio.to_thread(rag.load_documents, file_paths)
+    await rag._load_and_process_documents()
     return rag
 
-async def query_knowledge_index(rag: UnifiedRAG, query: str, conversation_history: list) -> str:
+async def query_knowledge_index(rag: RAGEngine, query: str, conversation_history: list) -> str:
     """Queries the RAG engine asynchronously."""
     return await asyncio.to_thread(rag.get_response, query, conversation_history)
 
-async def generate_profile_summary(rag: UnifiedRAG) -> str:
+async def generate_profile_summary(rag: RAGEngine) -> str:
     """Generates the profile summary asynchronously."""
     return await asyncio.to_thread(rag.generate_full_profile)

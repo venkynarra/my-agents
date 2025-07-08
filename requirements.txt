@@ -6,6 +6,9 @@ grpcio
 grpcio-tools
 google-generativeai
 langchain
+langchain-community
+langchain-google-genai
+langchain-huggingface
 numpy
 openai
 pandas
@@ -17,6 +20,7 @@ protobuf
 py-pushover-simple
 python-dotenv
 python-magic
+python-magic-bin
 pytesseract
 requests
 sendgrid

@@ -76,13 +76,30 @@ AGI_IMAGE_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABAAAAAQACAYAAAB/h
 
 # --- gRPC Client ---
 class CareerAssistantClient:
-    def __init__(self, host="localhost", port=50051):
-        self.channel = grpc.insecure_channel(f"{host}:{port}")
-        self.stub = career_assistant_pb2_grpc.CareerAssistantStub(self.channel)
+    """gRPC client for the Career Assistant service."""
+    def __init__(self, host='localhost', port=50052):
+        self.host = host
+        self.port = port
+        self.channel = None
+        self.stub = None
+        self.connect()
         logger.info(f"🔌 gRPC client connected to server at {host}:{port}")
+
+    def connect(self):
+        """Establishes a gRPC channel and stub."""
+        try:
+            self.channel = grpc.insecure_channel(f"{self.host}:{self.port}")
+            self.stub = career_assistant_pb2_grpc.CareerAssistantStub(self.channel)
+        except grpc.RpcError as e:
+            logger.error(f"gRPC error connecting to server {self.host}:{self.port}: {e.details()}")
+            self.channel = None
+            self.stub = None
 
     def get_analytics(self):
         """Fetches analytics data from the gRPC server."""
+        if not self.stub:
+            logger.warning("gRPC stub not initialized. Cannot fetch analytics.")
+            return []
         try:
             request = career_assistant_pb2.google_dot_protobuf_dot_empty__pb2.Empty()
             response = self.stub.GetAnalyticsData(request)
@@ -93,6 +110,9 @@ class CareerAssistantClient:
 
     def generate_profile(self):
         """Generates the profile summary from the gRPC server."""
+        if not self.stub:
+            logger.warning("gRPC stub not initialized. Cannot generate profile.")
+            return "Error: Could not generate the profile at this time."
         try:
             request = career_assistant_pb2.google_dot_protobuf_dot_empty__pb2.Empty()
             response = self.stub.GenerateProfile(request)
@@ -103,6 +123,9 @@ class CareerAssistantClient:
 
     def process_query(self, query: str, history: list):
         """Sends a query to the gRPC server and gets a response."""
+        if not self.stub:
+            logger.warning("gRPC stub not initialized. Cannot process query.")
+            return f"Error: Could not connect to the AI service. gRPC stub not initialized."
         try:
             chat_history = [career_assistant_pb2.ChatMessage(role=msg["role"], content=msg["content"]) for msg in history]
             request = career_assistant_pb2.QueryRequest(query=query, history=chat_history)
@@ -114,6 +137,9 @@ class CareerAssistantClient:
 
     def submit_contact_form(self, name: str, email: str, message: str):
         """Submits the contact form to the gRPC server."""
+        if not self.stub:
+            logger.warning("gRPC stub not initialized. Cannot submit contact form.")
+            return f"Error: Could not submit form. gRPC stub not initialized."
         try:
             request = career_assistant_pb2.ContactFormRequest(name=name, email=email, message=message)
             response = self.stub.SubmitContactForm(request)
@@ -125,7 +151,7 @@ class CareerAssistantClient:
 # --- Gradio Interface ---
 def create_gradio_interface(client: CareerAssistantClient):
     """Creates and launches the Gradio interface."""
-
+    
     theme = gr.themes.Soft(
         primary_hue="blue",
         secondary_hue="blue",
@@ -159,23 +185,31 @@ def create_gradio_interface(client: CareerAssistantClient):
         shadow_drop="rgba(0,0,0,0.2)"
     )
 
+    custom_css = """
+        body { background-color: #111827; }
+        #chatbot_window { height: 500px; background-color: #111827 !important; border: 1px solid #374151;}
+        .gr-sidebar { background-color: #1f2937; border-right: 1px solid #374151; padding: 20px; }
+        #title_header { text-align: center; margin-bottom: 20px; }
+        #download_button { width: 100%; }
+        textarea, input[type='text'], input[type='email'], input[type='password'] { 
+            background-color: #374151 !important; 
+            color: white !important; 
+            border: 1px solid #4A5568 !important;
+        }
+        .gr-message-text { color: black !important; }
+    """
+
     with gr.Blocks(
         theme=theme,
         title="AI Career Assistant for Venkatesh Narra",
-        css="""
-            body { background-color: #111827; }
-            #chatbot_window { height: 500px; }
-            .gr-sidebar { background-color: #1f2937; border-right: 1px solid #374151; padding: 20px; }
-            #title_header { text-align: center; margin-bottom: 20px; }
-            #download_button { width: 100%; }
-        """
+        css=custom_css
     ) as demo:
         with gr.Row():
             with gr.Column(scale=1, min_width=250, elem_classes="gr-sidebar"):
                 gr.Markdown("# Venkatesh Narra", elem_id="title_header")
                 gr.DownloadButton(
                     "📄 Download Resume",
-                    value=RESUME_PATH,
+                    value="agent_knowledge/venkatesh_narra_resume.pdf",
                     variant="primary",
                     elem_id="download_button"
                 )
@@ -184,7 +218,7 @@ def create_gradio_interface(client: CareerAssistantClient):
                 with gr.Tabs():
                     with gr.TabItem("🧠 AI Chatbot", id="chatbot_tab"):
                         gr.Markdown("<h2 style='text-align: center;'>Ask Me Anything</h2>")
-                        chatbot_window = gr.Chatbot(elem_id="chatbot_window", label="Conversation", bubble_full_width=False, type="messages")
+                        chatbot_window = gr.Chatbot(elem_id="chatbot_window", label="Conversation", type="messages")
                         with gr.Row():
                             query_input = gr.Textbox(placeholder="e.g., What is your experience with AI?", show_label=False, scale=4)
                             send_button = gr.Button("▶️ Send", variant="primary", scale=1)
@@ -296,11 +330,11 @@ def create_gradio_interface(client: CareerAssistantClient):
     return demo
 
 def main():
-    """Main function to initialize the client and launch the Gradio app."""
+    # Initialize and launch the Gradio interface
     client = CareerAssistantClient()
     interface = create_gradio_interface(client)
-    interface.launch(server_name="0.0.0.0", server_port=7860, share=True)
-    logger.info("🚀 Gradio UI is running at http://localhost:7860")
+    interface.launch(server_name="0.0.0.0", server_port=7862, share=True)
+    logger.info("🚀 Gradio UI is running at http://localhost:7862")
 
 if __name__ == "__main__":
     main() 
