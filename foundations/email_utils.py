@@ -1,10 +1,16 @@
 """
 Email sending utilities for the Career Assistant.
 """
-import logging
-from sendgrid import SendGridAPIClient
+import os
+import sendgrid
 from sendgrid.helpers.mail import Mail
-from .config import SENDGRID_API_KEY, FROM_EMAIL
+import logging
+
+# Import configuration safely
+from .config import SENDGRID_API_KEY, SENDER_EMAIL, RECIPIENT_EMAIL
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +24,7 @@ def send_contact_email(name: str, email: str, message: str) -> bool:
             logger.error("SendGrid API key not configured properly.")
             return False
             
-        sg = SendGridAPIClient(api_key=SENDGRID_API_KEY)
+        sg = sendgrid.SendGridAPIClient(SENDGRID_API_KEY)
         
         # Email content - acknowledgment to the user
         subject = "Thank you for contacting Venkatesh Narra!"
@@ -75,18 +81,22 @@ def send_contact_email(name: str, email: str, message: str) -> bool:
         """
         
         mail = Mail(
-            from_email=FROM_EMAIL,
-            to_emails=email,  # Send TO the user's email address
+            from_email=SENDER_EMAIL,
+            to_emails=RECIPIENT_EMAIL,  # Send TO the user's email address
             subject=subject,
             html_content=html_content,
             plain_text_content=plain_text_content
         )
         
         response = sg.send(mail)
-        logger.info(f"✅ Confirmation email sent successfully to {email}. Status: {response.status_code}")
-        return True
         
+        if response.status_code >= 200 and response.status_code < 300:
+            logger.info(f"✅ Contact email sent successfully to {RECIPIENT_EMAIL}")
+            return True
+        else:
+            logger.error(f"❌ Failed to send email: {response.status_code} {response.body}")
+            return False
     except Exception as e:
-        logger.error(f"❌ An exception occurred while sending email: {e}")
+        logger.error(f"💥 An unexpected error occurred while sending email: {e}")
         return False
     
