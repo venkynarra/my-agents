@@ -3,5 +3,13 @@
 __pycache__/
 *.pyc
 response_cache.db
+
+# LlamaIndex and RAG artifacts
 rag_index/
-foundations/config.py
+foundations/rag_index/
+
+# Database files
+foundations/career_analytics.db
+
+# Log files
+*.log

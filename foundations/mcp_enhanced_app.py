@@ -10,6 +10,7 @@ import plotly.express as px
 import pandas as pd
 from datetime import datetime
 import re
+from google.protobuf import empty_pb2
 
 # Import generated gRPC classes
 from . import career_assistant_pb2
@@ -32,37 +33,42 @@ except FileNotFoundError:
 def parse_profile_md(md_content):
     """Parses the profile markdown into structured sections using a more robust method."""
     sections = {}
-    # Split content by lines and reconstruct sections
     current_section = None
-    section_content = []
-
-    # Define the headers to look for, case-insensitively
-    headers = ["summary", "top skills", "experience", "education"]
-
-    for line in md_content.splitlines():
-        # Check if the line is a new section header
-        line_lower = line.strip().lower()
-        if line_lower in headers:
-            # If we were in a section, save its content
-            if current_section:
-                sections[current_section] = "\n".join(section_content).strip()
+    
+    # Split by major headers (H2)
+    major_sections = re.split(r'\n## ', md_content)
+    
+    for section in major_sections:
+        if not section.strip():
+            continue
             
-            # Start the new section
-            current_section = line_lower
-            section_content = []
-        elif current_section:
-            # Add the line to the current section's content
-            section_content.append(line.strip())
+        lines = section.strip().split('\n')
+        header = lines[0].strip()
+        content = "\n".join(lines[1:]).strip()
+        
+        sections[header.lower()] = content
 
-    # Save the last section
-    if current_section:
-        sections[current_section] = "\n".join(section_content).strip()
+    # Further parse skills into sub-categories
+    skills_content = sections.get('top skills', '')
+    skill_categories = {}
+    current_category = None
+    
+    for line in skills_content.split('\n'):
+        if line.startswith('### '):
+            current_category = line.replace('###', '').strip()
+            skill_categories[current_category] = []
+        elif line.startswith('- ') and current_category:
+            skill_categories[current_category].append(line)
+            
+    sections['skills_categorized'] = skill_categories
 
     return {
         "summary": sections.get("summary", "Not found."),
         "skills": sections.get("top skills", "Not found."),
         "experience": sections.get("experience", "Not found."),
         "education": sections.get("education", "Not found."),
+        "projects": sections.get("projects", "Not found."),
+        "skills_categorized": sections.get('skills_categorized', {})
     }
 
 
@@ -77,7 +83,7 @@ AGI_IMAGE_URL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABAAAAAQACAYAAAB/h
 # --- gRPC Client ---
 class CareerAssistantClient:
     """gRPC client for the Career Assistant service."""
-    def __init__(self, host='localhost', port=50052):
+    def __init__(self, host='localhost', port=50051):
         self.host = host
         self.port = port
         self.channel = None
@@ -101,7 +107,7 @@ class CareerAssistantClient:
             logger.warning("gRPC stub not initialized. Cannot fetch analytics.")
             return []
         try:
-            request = career_assistant_pb2.google_dot_protobuf_dot_empty__pb2.Empty()
+            request = empty_pb2.Empty()
             response = self.stub.GetAnalyticsData(request)
             return response.interactions
         except grpc.RpcError as e:
@@ -114,7 +120,7 @@ class CareerAssistantClient:
             logger.warning("gRPC stub not initialized. Cannot generate profile.")
             return "Error: Could not generate the profile at this time."
         try:
-            request = career_assistant_pb2.google_dot_protobuf_dot_empty__pb2.Empty()
+            request = empty_pb2.Empty()
             response = self.stub.GenerateProfile(request)
             return response.content
         except grpc.RpcError as e:
@@ -228,9 +234,11 @@ def create_gradio_interface(client: CareerAssistantClient):
                             label="Example Questions"
                         )
 
-                    with gr.TabItem("📊 Dashboard", id="dashboard_tab"):
+                    with gr.TabItem("📊 Dashboard", id="dashboard_tab") as dashboard_tab_item:
                         gr.Markdown("<h1 style='text-align: center;'>AI Assistant Dashboard</h1>")
                         gr.Markdown("Welcome to my AI-Powered Career Hub! This dashboard provides real-time insights into user interactions with the assistant.")
+                        with gr.Row():
+                            refresh_button = gr.Button("🔄 Refresh Analytics")
                         with gr.Row():
                             daily_interactions_plot = gr.Plot(label="Daily Interactions")
                             hourly_activity_plot = gr.Plot(label="Hourly Activity")
@@ -238,7 +246,17 @@ def create_gradio_interface(client: CareerAssistantClient):
                             frequent_queries_plot = gr.Plot(label="Most Frequent Queries")
                             
                     with gr.TabItem("👤 Profile", id="profile_tab"):
-                        profile_content = gr.Markdown("Loading profile...")
+                        gr.Markdown("<h1 style='text-align: center;'>Professional Profile</h1>")
+                        with gr.Accordion("Executive Summary", open=True):
+                            summary_md = gr.Markdown("Loading...")
+                        with gr.Accordion("Top Skills", open=True):
+                            skills_categorized_md = gr.Markdown("Loading...")
+                        with gr.Accordion("Projects", open=False):
+                            projects_md = gr.Markdown("Loading...")
+                        with gr.Accordion("Professional Experience", open=False):
+                            experience_md = gr.Markdown("Loading...")
+                        with gr.Accordion("Education", open=False):
+                            education_md = gr.Markdown("Loading...")
 
                     with gr.TabItem("✉️ Contact & Schedule", id="contact_tab"):
                         with gr.Row():
@@ -253,88 +271,123 @@ def create_gradio_interface(client: CareerAssistantClient):
                                 contact_status = gr.Markdown(visible=False)
                             with gr.Column():
                                 gr.Markdown("### Schedule a Meeting")
-                                gr.Markdown("Ready to connect? Book a time that works for you using my Calendly link below.")
-                                gr.HTML(f'<a href="{CALENDLY_LINK}" target="_blank" style="display:inline-block;padding:10px 20px;background-color:#007bff;color:white;text-decoration:none;border-radius:5px;">Book a Meeting on Calendly</a>')
+                                gr.Markdown("Or schedule a 30-minute meeting with me directly via Calendly:")
+                                gr.Markdown(f"<a href='{CALENDLY_LINK}' target='_blank' style='color: #3B82F6; text-decoration: none;'>📅 Schedule on Calendly</a>")
 
 
-        # --- Event Handlers ---
+        # --- Function Definitions ---
         async def chat_wrapper(query, history):
+            """Wraps the gRPC client call to process a query."""
             if not history:
                 history = []
+            
+            # Add user message to history, ensuring it's in the correct format
             history.append({"role": "user", "content": query})
-            response = await asyncio.to_thread(client.process_query, query, history)
+            
+            # Prepare history for API call
+            history_for_api = [msg for msg in history if isinstance(msg, dict) and "role" in msg and "content" in msg]
+            
+            response = client.process_query(query, history_for_api)
             history.append({"role": "assistant", "content": response})
             return "", history
 
         async def handle_contact_submission(name_val, email_val, msg_val):
-            response_msg = await asyncio.to_thread(client.submit_contact_form, name_val, email_val, msg_val)
-            return gr.update(value=f"**{response_msg}**", visible=True)
+            """Handles the submission of the contact form."""
+            return client.submit_contact_form(name_val, email_val, msg_val)
 
         def update_profile():
-            """Fetches the AI-generated profile and updates the UI."""
-            content = client.generate_profile()
-            return content
+            """Parses the profile markdown and updates the UI components."""
+            parsed_sections = parse_profile_md(PROFILE_MD)
+            
+            # Format categorized skills for display
+            skills_text = ""
+            for category, skills in parsed_sections['skills_categorized'].items():
+                skills_text += f"**{category}**\n"
+                skills_text += "\n".join(skills) + "\n\n"
+                
+            return (
+                parsed_sections["summary"],
+                skills_text,
+                parsed_sections["projects"],
+                parsed_sections["experience"],
+                parsed_sections["education"]
+            )
 
         def update_analytics():
-            """Fetches analytics and returns a Plotly figure."""
+            """Fetches analytics and updates the plots."""
+            logger.info("📊 Fetching analytics data for dashboard...")
             interactions = client.get_analytics()
+            
             if not interactions:
-                # Return empty plots if no data
-                return None, None, None
+                logger.warning("No interaction data to plot.")
+                # Create empty plots with titles to avoid errors
+                fig_daily = px.bar(title='Daily Interactions').update_layout(template="plotly_dark")
+                fig_hourly = px.line(title='Hourly Activity').update_layout(template="plotly_dark")
+                fig_frequent = px.treemap(title='Most Frequent Queries').update_layout(template="plotly_dark")
+                return fig_daily, fig_hourly, fig_frequent
+
+            # Convert to DataFrame
+            df = pd.DataFrame([{
+                "timestamp": ix.timestamp.split('.')[0],
+                "query": ix.query.strip().lower(),
+            } for ix in interactions])
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
             
-            df = pd.DataFrame(
-                [
-                    {
-                        "timestamp": datetime.strptime(ix.timestamp.split('.')[0], '%Y-%m-%d %H:%M:%S'),
-                        "query": ix.query.strip().lower(),
-                    }
-                    for ix in interactions
-                ]
-            )
-            df['date'] = df['timestamp'].dt.date
+            # 1. Daily Interactions
+            daily_counts = df.resample('D', on='timestamp').size().reset_index(name='count')
+            fig_daily = px.bar(daily_counts, x='timestamp', y='count', title='Daily Interactions', labels={'timestamp': 'Date', 'count': 'Interactions'})
+            fig_daily.update_layout(template="plotly_dark")
+
+            # 2. Hourly Activity
             df['hour'] = df['timestamp'].dt.hour
+            hourly_counts = df.groupby('hour').size().reset_index(name='count')
+            fig_hourly = px.line(hourly_counts, x='hour', y='count', title='Hourly Activity', markers=True, labels={'hour': 'Hour of Day', 'count': 'Interactions'})
+            fig_hourly.update_layout(template="plotly_dark")
+
+            # 3. Most Frequent Queries (using regex to simplify)
+            df['clean_query'] = df['query'].str.lower().str.replace(r'[^a-z\s]', '', regex=True).str.strip()
+            query_counts = df['clean_query'].value_counts().nlargest(10).reset_index()
+            query_counts.columns = ['query', 'count']
+            fig_frequent = px.treemap(query_counts, path=['query'], values='count', title='Most Frequent Queries')
+            fig_frequent.update_layout(template="plotly_dark", treemapcolorway = ["#7B68EE", "#50C878", "#1E90FF", "#FFD700", "#FF4500"])
             
-            # Plot 1: Daily Interactions
-            daily_counts = df.groupby('date').size().reset_index(name='counts')
-            fig_daily = px.bar(
-                daily_counts, x='date', y='counts', title="Daily Interactions",
-                labels={'date': 'Date', 'counts': 'Number of Interactions'}, template="plotly_dark"
-            )
-
-            # Plot 2: Hourly Activity
-            hourly_counts = df.groupby('hour').size().reset_index(name='counts')
-            fig_hourly = px.bar(
-                hourly_counts, x='hour', y='counts', title="Interactions by Hour of Day",
-                labels={'hour': 'Hour of Day', 'counts': 'Number of Interactions'}, template="plotly_dark"
-            )
-
-            # Plot 3: Frequent Queries
-            query_counts = df['query'].value_counts().nlargest(5).reset_index()
-            query_counts.columns = ['query', 'counts']
-            fig_queries = px.bar(
-                query_counts, y='query', x='counts', title="Top 5 Most Frequent Queries",
-                orientation='h', labels={'query': 'Query', 'counts': 'Count'}, template="plotly_dark"
-            )
-            fig_queries.update_yaxes(autorange="reversed")
-
-            return fig_daily, fig_hourly, fig_queries
-
-        # Link data loading to tab selection/app load
-        demo.load(update_analytics, [], [daily_interactions_plot, hourly_activity_plot, frequent_queries_plot])
-        demo.load(update_profile, [], [profile_content])
-
+            return fig_daily, fig_hourly, fig_frequent
+            
+        # --- Event Handlers ---
+        # Chatbot interactions
         query_input.submit(chat_wrapper, [query_input, chatbot_window], [query_input, chatbot_window])
         send_button.click(chat_wrapper, [query_input, chatbot_window], [query_input, chatbot_window])
-        contact_btn.click(handle_contact_submission, [name, email, message], [contact_status])
 
-    return demo
+        # Contact form
+        contact_btn.click(
+            handle_contact_submission, 
+            [name, email, message], 
+            contact_status
+        )
+
+        # Initial data load for tabs
+        demo.load(update_profile, outputs=[summary_md, skills_categorized_md, projects_md, experience_md, education_md])
+        demo.load(update_analytics, outputs=[daily_interactions_plot, hourly_activity_plot, frequent_queries_plot])
+
+        # Refresh analytics when the dashboard tab is selected or the refresh button is clicked
+        dashboard_tab_item.select(
+            fn=update_analytics, 
+            outputs=[daily_interactions_plot, hourly_activity_plot, frequent_queries_plot]
+        )
+        refresh_button.click(
+            fn=update_analytics, 
+            outputs=[daily_interactions_plot, hourly_activity_plot, frequent_queries_plot]
+        )
+    
+    # Launch the Gradio app
+    demo.launch(server_name="0.0.0.0")
 
 def main():
     # Initialize and launch the Gradio interface
     client = CareerAssistantClient()
-    interface = create_gradio_interface(client)
-    interface.launch(server_name="0.0.0.0", server_port=7862, share=True)
-    logger.info("🚀 Gradio UI is running at http://localhost:7862")
+    demo = create_gradio_interface(client)
+    # Launch the Gradio app with server_name="0.0.0.0" to be accessible externally
+    demo.launch(server_name="0.0.0.0")
 
 if __name__ == "__main__":
-    main() 
+    main()

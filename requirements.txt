@@ -30,3 +30,7 @@ tika
 unstructured
 unstructured[local-inference]
 watchdog
+llama-index
+llama-index-llms-gemini
+llama-index-embeddings-huggingface
+llama-index-vector-stores-faiss

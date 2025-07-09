@@ -1,21 +1,19 @@
 # foundations/ai_server.py
 import asyncio
 import logging
-import sqlite3
 from pathlib import Path
 import grpc
 from concurrent import futures
 import os
 from dotenv import load_dotenv
-import google.generativeai as genai
-import re
+
 
 # Import generated gRPC classes
 from . import career_assistant_pb2
 from . import career_assistant_pb2_grpc
 
 # Import project-specific modules
-from .rag_engine import RAGEngine, build_knowledge_index, query_knowledge_index, generate_profile_summary
+from .rag_engine import build_knowledge_index, query_knowledge_index, generate_profile_summary
 from .email_utils import send_contact_email
 from . import db_utils
 
@@ -23,7 +21,8 @@ from . import db_utils
 load_dotenv(override=True)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    # We are not configuring genai here anymore as it's handled in rag_engine
+    pass
 else:
     logging.warning("GEMINI_API_KEY not found in environment variables.")
 
@@ -31,58 +30,16 @@ else:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Configuration ---
-load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-DB_PATH = Path('foundations/career_analytics.db')
-KNOWLEDGE_BASE_DIR = 'agent_knowledge/'
-RAG_INDEX_PATH = Path('foundations/rag_index')
-
-# Global RAG engine instance
-rag_engine: RAGEngine = None
-
-
-class CareerAssistantServicer(career_assistant_pb2_grpc.CareerAssistantServicer):
+class CareerAssistantService(career_assistant_pb2_grpc.CareerAssistantServicer):
     """
     The gRPC service that provides AI-powered responses.
     """
-    def __init__(self, rag_engine_instance: RAGEngine):
-        self.rag_engine = rag_engine_instance
-        self.db_conn = self._init_database()
-
-    def _init_database(self):
-        """Initializes the SQLite database connection and creates tables if they don't exist."""
-        try:
-            conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS analytics_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    event_type TEXT NOT NULL,
-                    details TEXT
-                )
-            ''')
-            conn.commit()
-            logger.info("✅ Database connection established and table verified.")
-            return conn
-        except sqlite3.Error as e:
-            logger.error(f"💥 Database error: {e}")
-            return None
-
-    def _log_event(self, event_type: str, details: str = ''):
-        """Logs an event to the analytics database."""
-        if not self.db_conn:
-            logger.warning("Database connection not available. Cannot log event.")
-            return
-        try:
-            cursor = self.db_conn.cursor()
-            cursor.execute("INSERT INTO analytics_log (event_type, details) VALUES (?, ?)", (event_type, details))
-            self.db_conn.commit()
-        except sqlite3.Error as e:
-            logger.error(f"💥 Failed to log event '{event_type}': {e}")
+    def __init__(self):
+        # Correctly resolve path from project root
+        self.knowledge_base_path = Path(__file__).parent.parent / "agent_knowledge"
+        self.index_path = Path(__file__).parent / "rag_index"
+        self.rag_engine = None # Will be initialized by serve()
+        db_utils.initialize_db()
 
     async def _initialize_rag(self):
         """Initializes the RAG engine from all knowledge documents asynchronously."""
@@ -96,7 +53,7 @@ class CareerAssistantServicer(career_assistant_pb2_grpc.CareerAssistantServicer)
                 return
             logger.info(f"📚 Found {len(md_files)} documents to index.")
             
-            self.rag_engine = await build_knowledge_index(md_files, self.index_path)
+            self.rag_engine = await build_knowledge_index(self.knowledge_base_path, self.index_path)
             logger.info("✅ Unified RAG Knowledge Base ready!")
         except Exception as e:
             logger.critical(f"💥 Failed to initialize RAG index: {e}", exc_info=True)
@@ -104,19 +61,18 @@ class CareerAssistantServicer(career_assistant_pb2_grpc.CareerAssistantServicer)
 
     async def ProcessQuery(self, request, context):
         """Processes a user's query using the RAG engine."""
+        query_text = request.query
+        logger.info(f"🔍 Processing query with RAG: '{query_text}'")
         
         if self.rag_engine is None:
             logger.error("RAG index is not available. Cannot process query.")
             return career_assistant_pb2.QueryResponse(response="Sorry, the AI engine is currently offline. Please try again later.")
 
-        if not GEMINI_API_KEY:
-             return career_assistant_pb2.QueryResponse(response="Sorry, the AI engine is not configured correctly (missing API key).")
-            
         try:
-            query_text = request.query
-            logger.info(f"🔍 Processing query with RAG: '{query_text}'")
-            
-            response_text = await query_knowledge_index(self.rag_engine, query_text, request.history)
+            # The RAG engine now handles the full synthesis
+            response_text = await query_knowledge_index(
+                self.rag_engine, query_text
+            )
             
             logger.info(f"✅ RAG generated response of {len(response_text)} characters.")
             
@@ -196,20 +152,24 @@ class CareerAssistantServicer(career_assistant_pb2_grpc.CareerAssistantServicer)
             return career_assistant_pb2.AnalyticsResponse()
 
 async def serve():
-    """Starts the gRPC server."""
-    global rag_engine
+    """Starts the async gRPC server."""
+    logger.info("--- Starting serve function ---")
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
+    service = CareerAssistantService()
     
-    # Initialize the RAG engine
-    rag_engine = await build_knowledge_index([KNOWLEDGE_BASE_DIR], RAG_INDEX_PATH)
+    logger.info("--- Initializing RAG ---")
+    await service._initialize_rag()  # Ensure RAG is ready before serving
+    logger.info("--- RAG Initialized ---")
     
     career_assistant_pb2_grpc.add_CareerAssistantServicer_to_server(
-        CareerAssistantServicer(rag_engine), server
+        service, server
     )
+    logger.info("--- Servicer Added ---")
     
-    listen_addr = '[::]:50052'
+    listen_addr = '[::]:50051'
     server.add_insecure_port(listen_addr)
-    
+    logger.info("--- Port Added ---")
+
     logger.info(f"🚀 Server starting on {listen_addr}")
     await server.start()
     await server.wait_for_termination()
