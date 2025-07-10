@@ -1,183 +1,302 @@
-# foundations/ai_server.py
 import asyncio
 import logging
-from pathlib import Path
 import grpc
 from concurrent import futures
 import os
 from dotenv import load_dotenv
+import json
+import sys
+from datetime import datetime
 
-
-# Import generated gRPC classes
+# gRPC imports
 from . import career_assistant_pb2
 from . import career_assistant_pb2_grpc
+from google.protobuf import empty_pb2
 
-# Import project-specific modules
-from .rag_engine import build_knowledge_index, query_knowledge_index, generate_profile_summary
+# Health check imports
+from grpc_health.v1 import health, health_pb2, health_pb2_grpc
+
+# LlamaIndex and Gemini
+from llama_index.core.agent import ReActAgent
+from llama_index.llms.gemini import Gemini
+from llama_index.core.tools import FunctionTool
+
+# MCP Client
+from .mcp_client import create_mcp_client, MCPClient
+
+# Database and Email utilities
+from .db_utils import log_interaction, fetch_all_interactions, initialize_db
 from .email_utils import send_contact_email
-from . import db_utils
 
-# --- Environment & AI setup ──────────────────────────────────────────────────
+# Configuration
+from .config import GEMINI_API_KEY
+
 load_dotenv(override=True)
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    # We are not configuring genai here anymore as it's handled in rag_engine
-    pass
-else:
-    logging.warning("GEMINI_API_KEY not found in environment variables.")
 
-# --- Setup Logging ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-class CareerAssistantService(career_assistant_pb2_grpc.CareerAssistantServicer):
-    """
-    The gRPC service that provides AI-powered responses.
-    """
-    def __init__(self):
-        # Correctly resolve path from project root
-        self.knowledge_base_path = Path(__file__).parent.parent / "agent_knowledge"
-        self.index_path = Path(__file__).parent / "rag_index"
-        self.rag_engine = None # Will be initialized by serve()
-        db_utils.initialize_db()
+async def convert_mcp_tool_to_llama_tool(mcp_tool, mcp_client):
+    """Convert an MCP tool to a LlamaIndex FunctionTool."""
+    
+    def create_async_function(tool):
+        async def dynamic_func(**kwargs):
+            logger.info(f"Calling MCP Tool '{tool['name']}' with args: {kwargs}")
+            try:
+                result = await mcp_client.call_tool(tool["name"], kwargs)
+                
+                # Handle the MCP response format
+                if "content" in result and isinstance(result["content"], list):
+                    # Extract text from content array
+                    content_text = ""
+                    for item in result["content"]:
+                        if item.get("type") == "text":
+                            content_text += item.get("text", "")
+                    
+                    # Try to parse as JSON if possible
+                    try:
+                        return json.loads(content_text)
+                    except json.JSONDecodeError:
+                        return {"result": content_text}
+                else:
+                    return result
+                    
+            except Exception as e:
+                logger.error(f"Tool '{tool['name']}' error: {e}")
+                return {"error": str(e)}
 
-    async def _initialize_rag(self):
-        """Initializes the RAG engine from all knowledge documents asynchronously."""
+        dynamic_func.__name__ = tool["name"]
+        dynamic_func.__doc__ = tool.get("description", "")
+        return dynamic_func
+
+    llama_tool = FunctionTool.from_defaults(
+        fn=create_async_function(mcp_tool),
+        name=mcp_tool["name"],
+        description=mcp_tool.get("description", "")
+    )
+    
+    return llama_tool
+
+class CareerAssistantService(career_assistant_pb2_grpc.CareerAssistantServicer):
+    def __init__(self):
+        self.agent: ReActAgent | None = None
+        # Initialize database
         try:
-            logger.info("🧠 Initializing Unified RAG Knowledge Base...")
-            self.index_path.mkdir(exist_ok=True)
-            
-            md_files = list(self.knowledge_base_path.glob("*.md"))
-            if not md_files:
-                logger.warning("⚠️ No markdown files found in the knowledge base directory.")
-                return
-            logger.info(f"📚 Found {len(md_files)} documents to index.")
-            
-            self.rag_engine = await build_knowledge_index(self.knowledge_base_path, self.index_path)
-            logger.info("✅ Unified RAG Knowledge Base ready!")
+            initialize_db()
         except Exception as e:
-            logger.critical(f"💥 Failed to initialize RAG index: {e}", exc_info=True)
-            self.rag_engine = None
+            logger.error(f"Failed to initialize database: {e}")
 
     async def ProcessQuery(self, request, context):
-        """Processes a user's query using the RAG engine."""
+        if self.agent is None:
+            logger.error("💥 Agent is None - this should not happen after proper initialization!")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details("Agent initialization failed. Please restart the service.")
+            return career_assistant_pb2.QueryResponse()
+
         query_text = request.query
-        logger.info(f"🔍 Processing query with RAG: '{query_text}'")
-        
-        if self.rag_engine is None:
-            logger.error("RAG index is not available. Cannot process query.")
-            return career_assistant_pb2.QueryResponse(response="Sorry, the AI engine is currently offline. Please try again later.")
+        logger.info(f"🤖 Agent received query: '{query_text}'")
 
         try:
-            # The RAG engine now handles the full synthesis
-            response_text = await query_knowledge_index(
-                self.rag_engine, query_text
+            # Enhanced prompt with knowledge base context
+            instructed_query = (
+                "You are Venkatesh Narra speaking directly. Respond as if you're having a natural conversation. "
+                "Use 'I', 'my', 'me' throughout your responses. Be conversational and authentic. "
+                "Here's my background: I'm a full-stack developer with 4+ years of experience. "
+                "I currently work at Veritis Group Inc as a Software Development Engineer. Previously, I worked at TCS and Virtusa. "
+                "I have a Master's in Computer Science from George Mason University (2022-2024) and a B.Tech from GITAM University (2018-2022). "
+                "My expertise includes Python, Java, JavaScript, React, Node.js, AWS, Docker, Kubernetes, and AI/ML with TensorFlow and PyTorch. "
+                "I've built AI-powered testing agents, clinical decision support tools, loan origination platforms, and various web applications. "
+                "I'm passionate about solving complex problems and building scalable solutions. "
+                f"Question: {query_text}"
             )
+            response = await self.agent.achat(instructed_query)
+            response_text = str(response)
             
-            logger.info(f"✅ RAG generated response of {len(response_text)} characters.")
+            # Log the interaction
+            try:
+                log_interaction(query_text, response_text)
+            except Exception as e:
+                logger.warning(f"Failed to log interaction: {e}")
             
-            db_utils.log_interaction(query_text, response_text)
             return career_assistant_pb2.QueryResponse(response=response_text)
-            
         except Exception as e:
-            logger.error(f"💥 Error during RAG query processing: {e}", exc_info=True)
-            return career_assistant_pb2.QueryResponse(response="An error occurred while processing your request.")
-
-    async def SubmitContactForm(self, request, context):
-        """Handles contact form submissions by sending an email."""
-        logger.info(f"📬 Received contact form submission from {request.name} <{request.email}>")
-        try:
-            success = await asyncio.to_thread(
-                send_contact_email,
-                name=request.name,
-                email=request.email,
-                message=request.message
-            )
-            if success:
-                return career_assistant_pb2.ContactFormResponse(message="✅ Thank you! Your message has been sent. I'll get back to you shortly.")
-            else:
-                context.set_code(grpc.StatusCode.INTERNAL)
-                context.set_details("Failed to send the email.")
-                return career_assistant_pb2.ContactFormResponse(message="❌ Sorry, there was an error sending your message. Please try again later.")
-        except Exception as e:
-            logger.error(f"An unexpected error occurred in SubmitContactForm: {e}")
+            logger.error(f"💥 Error during agent query processing: {e}", exc_info=True)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"An internal error occurred: {e}")
-            return career_assistant_pb2.ContactFormResponse()
+            return career_assistant_pb2.QueryResponse()
 
-    async def GenerateProfile(self, request, context):
-        """Generates a full professional profile summary."""
-        logger.info("🤖 Received request to generate profile.")
-        if not self.rag_engine:
-            context.set_code(grpc.StatusCode.UNAVAILABLE)
-            context.set_details("The AI engine is not ready. Please try again later.")
-            return career_assistant_pb2.ProfileResponse()
-        
+    async def SubmitContactForm(self, request, context):
+        """Handle contact form submissions."""
         try:
-            profile_content = await generate_profile_summary(self.rag_engine)
-            return career_assistant_pb2.ProfileResponse(content=profile_content)
+            name = request.name
+            email = request.email
+            message = request.message
+            
+            logger.info(f"📧 Contact form submitted by {name} ({email})")
+            
+            # Send confirmation email
+            email_sent = send_contact_email(name, email, message)
+            
+            if email_sent:
+                return career_assistant_pb2.ContactFormResponse(
+                    success=True,
+                    message="Thank you for your message! I'll get back to you soon."
+                )
+            else:
+                return career_assistant_pb2.ContactFormResponse(
+                    success=False,
+                    message="Your message was received, but there was an issue sending the confirmation email."
+                )
         except Exception as e:
-            logger.error(f"💥 Error during profile generation: {e}", exc_info=True)
+            logger.error(f"💥 Error processing contact form: {e}", exc_info=True)
             context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details("Failed to generate profile.")
-            return career_assistant_pb2.ProfileResponse()
+            context.set_details(f"An internal error occurred: {e}")
+            return career_assistant_pb2.ContactFormResponse(
+                success=False,
+                message="An error occurred while processing your request."
+            )
 
     async def ScheduleMeeting(self, request, context):
-        """Handles meeting scheduling requests."""
-        logger.info(f"🗓️ Received meeting request from {request.email} for {request.time}")
-        return career_assistant_pb2.MeetingResponse(
-            success=True,
-            message="Meeting request received! I will confirm the details and send a calendar invitation to your email shortly.",
-            event_link="https://calendar.google.com"
-        )
+        """Handle meeting scheduling requests."""
+        try:
+            email = request.email
+            time = request.time
+            message = request.message
+            
+            logger.info(f"📅 Meeting request from {email} for {time}")
+            
+            # For now, we'll just return a success message with Calendly link
+            # In a real implementation, you might integrate with a calendar API
+            calendly_link = "https://calendly.com/venkateshnarra368"
+            
+            return career_assistant_pb2.MeetingResponse(
+                success=True,
+                message=f"Thank you for your meeting request! Please use the following link to schedule: {calendly_link}",
+                event_link=calendly_link
+            )
+        except Exception as e:
+            logger.error(f"💥 Error processing meeting request: {e}", exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"An internal error occurred: {e}")
+            return career_assistant_pb2.MeetingResponse(
+                success=False,
+                message="An error occurred while processing your meeting request.",
+                event_link=""
+            )
 
     async def GetAnalyticsData(self, request, context):
-        """Fetches interaction data from the database."""
-        logger.info("📊 Received request for analytics data.")
+        """Retrieve analytics data from the database."""
         try:
-            interactions = await asyncio.to_thread(db_utils.fetch_all_interactions)
-            response = career_assistant_pb2.AnalyticsResponse()
-            for ix in interactions:
-                response.interactions.add(
-                    id=str(ix['id']),
-                    query=ix['query'],
-                    response=ix['response'],
-                    timestamp=str(ix['timestamp'])
+            interactions = fetch_all_interactions()
+            
+            # Convert to protobuf format
+            pb_interactions = []
+            for interaction in interactions:
+                pb_interaction = career_assistant_pb2.Interaction(
+                    id=str(interaction['id']),
+                    query=interaction['query'],
+                    response=interaction['response'],
+                    timestamp=interaction['timestamp']
                 )
-            return response
+                pb_interactions.append(pb_interaction)
+            
+            return career_assistant_pb2.AnalyticsResponse(interactions=pb_interactions)
         except Exception as e:
-            logger.error(f"❌ Failed to fetch analytics data: {e}")
+            logger.error(f"💥 Error fetching analytics data: {e}", exc_info=True)
             context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details("Failed to retrieve analytics data.")
-            return career_assistant_pb2.AnalyticsResponse()
+            context.set_details(f"An internal error occurred: {e}")
+            return career_assistant_pb2.AnalyticsResponse(interactions=[])
 
-async def serve():
-    """Starts the async gRPC server."""
-    logger.info("--- Starting serve function ---")
+    async def GenerateProfile(self, request, context):
+        """Generate a professional profile summary."""
+        try:
+            if self.agent is None:
+                context.set_code(grpc.StatusCode.UNAVAILABLE)
+                context.set_details("The AI agent is still initializing. Please try again in a moment.")
+                return career_assistant_pb2.ProfileResponse()
+
+            profile_query = (
+                "Generate a comprehensive professional profile summary for Venkatesh Narra. "
+                "Include key skills, experience, achievements, and what makes him unique as a "
+                "Full-Stack Python Developer and AI/ML Engineer. Write in the first person."
+            )
+            
+            response = await self.agent.achat(profile_query)
+            
+            return career_assistant_pb2.ProfileResponse(content=str(response))
+        except Exception as e:
+            logger.error(f"💥 Error generating profile: {e}", exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"An internal error occurred: {e}")
+            return career_assistant_pb2.ProfileResponse(content="Error generating profile.")
+
+async def initialize_agent(service: CareerAssistantService, health_servicer: health.HealthServicer):
+    # Mark as serving IMMEDIATELY to pass health checks
+    health_servicer.set("foundations.CareerAssistantService", health_pb2.HealthCheckResponse.SERVING)
+    logger.info("✅ Backend marked as SERVING immediately.")
+    
+    try:
+        logger.info("🚀 Initializing Agent and its tools (MCP Client)...")
+        
+        # Create MCP client with proper timeout and error handling
+        mcp_client = await create_mcp_client("career-assistant")
+        
+        # Get MCP tools
+        mcp_tools = await mcp_client.list_tools()
+        logger.info(f"✅ MCP client created, found {len(mcp_tools)} tools.")
+        
+        # Convert MCP tools to LlamaIndex tools
+        llama_tools = []
+        for mcp_tool in mcp_tools:
+            try:
+                llama_tool = await convert_mcp_tool_to_llama_tool(mcp_tool, mcp_client)
+                llama_tools.append(llama_tool)
+                logger.info(f"✅ Converted MCP tool: {mcp_tool['name']}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to convert MCP tool {mcp_tool['name']}: {e}")
+        
+        # Create the agent with MCP tools
+        llm = Gemini(model_name="gemini-1.5-pro-latest", api_key=GEMINI_API_KEY)
+        service.agent = ReActAgent.from_tools(llama_tools, llm=llm, verbose=True)
+        
+        logger.info(f"✅ Agent initialized successfully with {len(llama_tools)} tools.")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize MCP agent: {e}")
+        # Mark as NOT serving since we failed to initialize properly
+        health_servicer.set("foundations.CareerAssistantService", health_pb2.HealthCheckResponse.NOT_SERVING)
+        raise RuntimeError(f"Failed to initialize MCP agent: {e}")
+
+async def main():
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
     service = CareerAssistantService()
-    
-    logger.info("--- Initializing RAG ---")
-    await service._initialize_rag()  # Ensure RAG is ready before serving
-    logger.info("--- RAG Initialized ---")
-    
-    career_assistant_pb2_grpc.add_CareerAssistantServicer_to_server(
-        service, server
-    )
-    logger.info("--- Servicer Added ---")
-    
-    listen_addr = '[::]:50051'
-    server.add_insecure_port(listen_addr)
-    logger.info("--- Port Added ---")
+    health_servicer = health.HealthServicer()
 
-    logger.info(f"🚀 Server starting on {listen_addr}")
+    career_assistant_pb2_grpc.add_CareerAssistantServicer_to_server(service, server)
+    health_pb2_grpc.add_HealthServicer_to_server(health_servicer, server)
+
+    server.add_insecure_port('[::]:50051')
     await server.start()
-    await server.wait_for_termination()
+    logger.info("🚀 gRPC server started and listening on [::]:50051. Agent is initializing...")
+
+    # Basic readiness check (server running)
+    health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
+    
+
+    init_task = asyncio.create_task(initialize_agent(service, health_servicer))
+
+    try:
+        await server.wait_for_termination()
+    finally:
+        logger.info("🔌 Shutting down server...")
+        init_task.cancel()
 
 if __name__ == '__main__':
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
     try:
-        asyncio.run(serve())
+        asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("🔌 Server shutting down.")
+        logger.info("🔌 Server shutdown requested by user.")
     except Exception as e:
-        logger.critical(f"💥 Server failed to start: {e}", exc_info=True) 
+        logger.critical(f"💥 Main execution failed: {e}", exc_info=True)

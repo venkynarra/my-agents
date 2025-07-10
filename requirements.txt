@@ -4,6 +4,7 @@ faiss-cpu
 gradio
 grpcio
 grpcio-tools
+grpcio-health-checking
 google-generativeai
 langchain
 langchain-community

@@ -21,6 +21,9 @@ from mcp.types import (
 import mcp.types as types
 from pydantic import AnyUrl
 
+# Import the RAG engine components
+from .rag_engine import build_knowledge_index, query_knowledge_index
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("career-assistant-mcp")
@@ -29,12 +32,31 @@ logger = logging.getLogger("career-assistant-mcp")
 server = Server("career-assistant")
 
 # Knowledge base paths
-KNOWLEDGE_BASE_PATH = Path("../agent_knowledge")
+KNOWLEDGE_BASE_PATH = Path(__file__).parent.parent / "agent_knowledge"
+INDEX_PATH = Path(__file__).parent / "rag_index"
+
+# Global variables for lazy initialization
+rag_engine: Optional[Any] = None # Using Any to avoid circular import issues with LlamaIndex types
+career_manager: Optional["CareerDataManager"] = None
+initialization_lock = asyncio.Lock()
+
+async def _ensure_initialized():
+    """Ensure the RAG engine and data manager are initialized, using a lock."""
+    global rag_engine, career_manager
+    async with initialization_lock:
+        if career_manager is None:
+            logger.info("🧠 Initializing RAG engine for MCP Server...")
+            rag_engine = await build_knowledge_index(KNOWLEDGE_BASE_PATH, INDEX_PATH)
+            if not rag_engine:
+                raise RuntimeError("Failed to initialize RAG engine for MCP Server.")
+            career_manager = CareerDataManager(rag_engine)
+            logger.info("✅ CareerDataManager initialized.")
 
 class CareerDataManager:
     """Manages career data and provides structured access to information."""
     
-    def __init__(self):
+    def __init__(self, rag_engine):
+        self.rag_engine = rag_engine
         self.resume_data = self._load_resume_data()
         self.projects_data = self._load_projects_data()
         self.skills_data = self._load_skills_data()
@@ -187,8 +209,8 @@ class CareerDataManager:
         # Implementation for extracting Q&A pairs
         return []
 
-# Initialize career data manager
-career_manager = CareerDataManager()
+# Initialize career data manager (will be initialized lazily)
+career_manager: Optional[CareerDataManager] = None
 
 @server.list_resources()
 async def handle_list_resources() -> list[Resource]:
@@ -315,11 +337,6 @@ async def handle_list_tools() -> list[Tool]:
                     "query": {
                         "type": "string",
                         "description": "Search query for finding relevant information"
-                    },
-                    "file_filter": {
-                        "type": "string",
-                        "enum": ["all", "resume", "projects", "profile", "faq"],
-                        "description": "Which files to search in"
                     }
                 },
                 "required": ["query"]
@@ -363,6 +380,8 @@ async def handle_list_tools() -> list[Tool]:
 @server.call_tool()
 async def handle_call_tool(request: CallToolRequest) -> CallToolResult:
     """Handle tool calls for career assistant functionality."""
+    # Ensure the data manager and RAG engine are loaded before proceeding.
+    await _ensure_initialized()
     
     if request.name == "get_resume_summary":
         section = request.arguments.get("section", "all")
@@ -416,37 +435,17 @@ async def handle_call_tool(request: CallToolRequest) -> CallToolResult:
     
     elif request.name == "search_knowledge_base":
         query = request.arguments.get("query", "")
-        file_filter = request.arguments.get("file_filter", "all")
+        if not query:
+            raise ValueError("A query must be provided for search_knowledge_base.")
+            
+        logger.info(f"MCP Tool: Searching knowledge base for query: '{query}'")
         
-        # Simple search implementation
-        search_results = []
-        search_content = ""
-        
-        if file_filter == "all" or file_filter == "resume":
-            search_content += career_manager.resume_data.get("raw_content", "")
-        if file_filter == "all" or file_filter == "projects":
-            search_content += career_manager.projects_data.get("raw_content", "")
-        if file_filter == "all" or file_filter == "profile":
-            search_content += career_manager.profile_data.get("raw_content", "")
-        if file_filter == "all" or file_filter == "faq":
-            search_content += career_manager.faq_data.get("raw_content", "")
-        
-        # Find relevant sections containing the query
-        lines = search_content.lower().split('\n')
-        query_lower = query.lower()
-        
-        for i, line in enumerate(lines):
-            if query_lower in line:
-                # Include context (previous and next lines)
-                start = max(0, i-2)
-                end = min(len(lines), i+3)
-                context = '\n'.join(lines[start:end])
-                search_results.append(context)
+        # Use the RAG engine to get a response
+        response_text = await query_knowledge_index(career_manager.rag_engine, query)
         
         result = {
             "query": query,
-            "file_filter": file_filter,
-            "results": search_results[:5]  # Limit to top 5 results
+            "response": response_text
         }
         
         return CallToolResult(
@@ -492,7 +491,8 @@ async def handle_call_tool(request: CallToolRequest) -> CallToolResult:
 
 async def main():
     """Main function to run the MCP server."""
-    # Import here to avoid issues with event loop
+    # Initialization is now lazy, so we just start the server communication loop.
+    logger.info("MCP Server starting... RAG engine will be lazy-loaded on the first tool call.")
     from mcp.server.stdio import stdio_server
     
     async with stdio_server() as (read_stream, write_stream):

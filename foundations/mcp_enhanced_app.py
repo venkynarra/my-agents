@@ -11,6 +11,8 @@ import pandas as pd
 from datetime import datetime
 import re
 from google.protobuf import empty_pb2
+import time
+from pathlib import Path
 
 # Import generated gRPC classes
 from . import career_assistant_pb2
@@ -245,20 +247,29 @@ def create_gradio_interface(client: CareerAssistantClient):
                         with gr.Row():
                             frequent_queries_plot = gr.Plot(label="Most Frequent Queries")
                             
-                    with gr.TabItem("👤 Profile", id="profile_tab"):
+                    with gr.TabItem("👤 Profile", id="profile_tab") as profile_tab:
                         gr.Markdown("<h1 style='text-align: center;'>Professional Profile</h1>")
                         with gr.Accordion("Executive Summary", open=True):
                             summary_md = gr.Markdown("Loading...")
                         with gr.Accordion("Top Skills", open=True):
-                            skills_categorized_md = gr.Markdown("Loading...")
-                        with gr.Accordion("Projects", open=False):
-                            projects_md = gr.Markdown("Loading...")
+                            skills_md = gr.Markdown("Loading...")
+                            with gr.Row():
+                                lang_skills = gr.Markdown(label="Languages & Frameworks")
+                                backend_skills = gr.Markdown(label="Backend & Databases")
+                                frontend_skills = gr.Markdown(label="Frontend & Design")
+                            with gr.Row():
+                                data_skills = gr.Markdown(label="Data Science & ML")
+                                devops_skills = gr.Markdown(label="DevOps & Tooling")
+                                cloud_skills = gr.Markdown(label="Cloud & Infrastructure")
                         with gr.Accordion("Professional Experience", open=False):
                             experience_md = gr.Markdown("Loading...")
                         with gr.Accordion("Education", open=False):
                             education_md = gr.Markdown("Loading...")
+                        with gr.Accordion("Projects", open=False):
+                            projects_md = gr.Markdown("Loading...")
 
                     with gr.TabItem("✉️ Contact & Schedule", id="contact_tab"):
+                        gr.Markdown("<h1 style='text-align: center;'>Contact Me</h1>")
                         with gr.Row():
                             with gr.Column():
                                 gr.Markdown("### Get in Touch")
@@ -296,98 +307,206 @@ def create_gradio_interface(client: CareerAssistantClient):
             return client.submit_contact_form(name_val, email_val, msg_val)
 
         def update_profile():
-            """Parses the profile markdown and updates the UI components."""
-            parsed_sections = parse_profile_md(PROFILE_MD)
-            
-            # Format categorized skills for display
-            skills_text = ""
-            for category, skills in parsed_sections['skills_categorized'].items():
-                skills_text += f"**{category}**\n"
-                skills_text += "\n".join(skills) + "\n\n"
+            """Loads actual content from knowledge files and formats it for the profile UI."""
+            try:
+                # Load actual content from knowledge files
+                profile_path = Path("agent_knowledge/profile.md")
+                experience_path = Path("agent_knowledge/experience_and_projects.md")
+                resume_path = Path("agent_knowledge/resume.md")
                 
-            return (
-                parsed_sections["summary"],
-                skills_text,
-                parsed_sections["projects"],
-                parsed_sections["experience"],
-                parsed_sections["education"]
-            )
+                # Read profile content
+                if profile_path.exists():
+                    with open(profile_path, 'r', encoding='utf-8') as f:
+                        profile_content = f.read()
+                else:
+                    profile_content = "Profile information not found."
+                
+                # Read experience content
+                if experience_path.exists():
+                    with open(experience_path, 'r', encoding='utf-8') as f:
+                        experience_content = f.read()
+                else:
+                    experience_content = "Experience information not found."
+                
+                # Read resume content
+                if resume_path.exists():
+                    with open(resume_path, 'r', encoding='utf-8') as f:
+                        resume_content = f.read()
+                else:
+                    resume_content = "Resume information not found."
+                
+                # Extract summary from profile
+                summary_match = re.search(r'## Summary\s*\n(.*?)(?=\n##|\n---|\Z)', profile_content, re.DOTALL)
+                summary = summary_match.group(1).strip() if summary_match else "Professional with 4+ years of experience in full-stack development and AI/ML."
+                
+                # Extract skills sections from profile
+                skills_section = ""
+                
+                # AI & ML Skills
+                ai_ml_match = re.search(r'### AI & Machine Learning\s*\n(.*?)(?=\n###|\n##|\Z)', profile_content, re.DOTALL)
+                ai_ml_skills = ai_ml_match.group(1).strip() if ai_ml_match else "- TensorFlow, PyTorch, Scikit-learn\n- LLMs, NLP, Deep Learning"
+                
+                # Backend Skills
+                backend_match = re.search(r'### Backend Development\s*\n(.*?)(?=\n###|\n##|\Z)', profile_content, re.DOTALL)
+                backend_skills = backend_match.group(1).strip() if backend_match else "- Python, Java, C++\n- FastAPI, Django, Spring Boot"
+                
+                # Frontend Skills
+                frontend_match = re.search(r'### Frontend Development\s*\n(.*?)(?=\n###|\n##|\Z)', profile_content, re.DOTALL)
+                frontend_skills = frontend_match.group(1).strip() if frontend_match else "- JavaScript, TypeScript, React\n- Node.js, Express.js"
+                
+                # Cloud & DevOps Skills
+                cloud_match = re.search(r'### Cloud & DevOps\s*\n(.*?)(?=\n###|\n##|\Z)', profile_content, re.DOTALL)
+                cloud_skills = cloud_match.group(1).strip() if cloud_match else "- AWS, Azure, Google Cloud\n- Docker, Kubernetes, CI/CD"
+                
+                # Extract experience section
+                exp_match = re.search(r'## Experience\s*\n(.*?)(?=\n##|\Z)', profile_content, re.DOTALL)
+                experience_summary = exp_match.group(1).strip() if exp_match else experience_content[:500] + "..."
+                
+                # Extract education section
+                edu_match = re.search(r'## Education\s*\n(.*?)(?=\n##|\Z)', profile_content, re.DOTALL)
+                education = edu_match.group(1).strip() if edu_match else "**Master of Science, Computer Science** - George Mason University (2022-2024)\n**Bachelor of Technology, Computer Science** - GITAM University (2017-2021)"
+                
+                # Extract projects section
+                projects_match = re.search(r'## Projects\s*\n(.*?)(?=\n##|\Z)', profile_content, re.DOTALL)
+                projects = projects_match.group(1).strip() if projects_match else experience_content[:300] + "..."
+                
+                # Format all skills
+                all_skills = f"### AI & Machine Learning\n{ai_ml_skills}\n\n### Backend Development\n{backend_skills}\n\n### Frontend Development\n{frontend_skills}\n\n### Cloud & DevOps\n{cloud_skills}"
+                
+                return (
+                    summary,  # summary_md
+                    all_skills,  # skills_md
+                    experience_summary,  # experience_md
+                    education,  # education_md
+                    projects,  # projects_md
+                    ai_ml_skills,  # lang_skills (reusing for AI/ML)
+                    backend_skills,  # backend_skills
+                    frontend_skills,  # frontend_skills
+                    "**Data Science & ML:** TensorFlow, PyTorch, Scikit-learn, LangChain, LlamaIndex",  # data_skills
+                    "**DevOps & Tools:** Docker, Kubernetes, Jenkins, GitLab CI, GitHub Actions",  # devops_skills
+                    cloud_skills  # cloud_skills
+                )
+                
+            except Exception as e:
+                logger.error(f"Error loading profile content: {e}")
+                # Fallback content
+                return (
+                    "Full-stack developer with 4+ years of experience in AI/ML and web development.",
+                    "**Skills:** Python, JavaScript, React, AWS, Docker, TensorFlow",
+                    "Experience at Veritis Group Inc, TCS, and Virtusa",
+                    "MS Computer Science - George Mason University",
+                    "AI-powered testing, clinical decision support, loan origination platform",
+                    "Python, Java, JavaScript",
+                    "FastAPI, Django, Spring Boot",
+                    "React, Node.js, Angular",
+                    "TensorFlow, PyTorch, Scikit-learn",
+                    "Docker, Kubernetes, Jenkins",
+                    "AWS, Azure, Google Cloud"
+                )
 
         def update_analytics():
-            """Fetches analytics and updates the plots."""
+            """Fetches and displays analytics data."""
             logger.info("📊 Fetching analytics data for dashboard...")
             interactions = client.get_analytics()
             
             if not interactions:
-                logger.warning("No interaction data to plot.")
-                # Create empty plots with titles to avoid errors
-                fig_daily = px.bar(title='Daily Interactions').update_layout(template="plotly_dark")
-                fig_hourly = px.line(title='Hourly Activity').update_layout(template="plotly_dark")
-                fig_frequent = px.treemap(title='Most Frequent Queries').update_layout(template="plotly_dark")
-                return fig_daily, fig_hourly, fig_frequent
-
-            # Convert to DataFrame
+                # Return empty plots and a message if no data
+                logger.info("No interaction data to plot. Displaying message.")
+                no_data_df = pd.DataFrame({'message': ["No interaction data available yet."]})
+                fig = px.text(no_data_df, x='message', y=[0], text_font_size=20)
+                fig.update_layout(xaxis_visible=False, yaxis_visible=False, showlegend=False)
+                return fig, fig, fig
+            
             df = pd.DataFrame([{
-                "timestamp": ix.timestamp.split('.')[0],
-                "query": ix.query.strip().lower(),
+                'timestamp': pd.to_datetime(ix.timestamp),
+                'query': ix.query
             } for ix in interactions])
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            
+
             # 1. Daily Interactions
-            daily_counts = df.resample('D', on='timestamp').size().reset_index(name='count')
-            fig_daily = px.bar(daily_counts, x='timestamp', y='count', title='Daily Interactions', labels={'timestamp': 'Date', 'count': 'Interactions'})
-            fig_daily.update_layout(template="plotly_dark")
-
+            daily_counts = df.set_index('timestamp').resample('D').count()['query'].rename("count")
+            fig_daily = px.bar(daily_counts, x=daily_counts.index, y='count', title="Total Daily Interactions")
+            fig_daily.update_layout(xaxis_title="Date", yaxis_title="Number of Interactions")
+            
             # 2. Hourly Activity
-            df['hour'] = df['timestamp'].dt.hour
-            hourly_counts = df.groupby('hour').size().reset_index(name='count')
-            fig_hourly = px.line(hourly_counts, x='hour', y='count', title='Hourly Activity', markers=True, labels={'hour': 'Hour of Day', 'count': 'Interactions'})
-            fig_hourly.update_layout(template="plotly_dark")
+            hourly_counts = df['timestamp'].dt.hour.value_counts().sort_index().rename("count")
+            fig_hourly = px.bar(hourly_counts, x=hourly_counts.index, y='count', title="User Activity by Hour")
+            fig_hourly.update_layout(xaxis_title="Hour of Day", yaxis_title="Number of Interactions")
 
-            # 3. Most Frequent Queries (using regex to simplify)
-            df['clean_query'] = df['query'].str.lower().str.replace(r'[^a-z\s]', '', regex=True).str.strip()
-            query_counts = df['clean_query'].value_counts().nlargest(10).reset_index()
-            query_counts.columns = ['query', 'count']
-            fig_frequent = px.treemap(query_counts, path=['query'], values='count', title='Most Frequent Queries')
-            fig_frequent.update_layout(template="plotly_dark", treemapcolorway = ["#7B68EE", "#50C878", "#1E90FF", "#FFD700", "#FF4500"])
-            
+            # 3. Frequent Queries
+            query_counts = df['query'].str.lower().value_counts().nlargest(10).rename("count")
+            fig_frequent = px.bar(query_counts, x=query_counts.index, y='count', title="Top 10 Most Frequent Queries")
+            fig_frequent.update_layout(xaxis_title="Query", yaxis_title="Count")
+
             return fig_daily, fig_hourly, fig_frequent
-            
+        
         # --- Event Handlers ---
-        # Chatbot interactions
-        query_input.submit(chat_wrapper, [query_input, chatbot_window], [query_input, chatbot_window])
-        send_button.click(chat_wrapper, [query_input, chatbot_window], [query_input, chatbot_window])
-
-        # Contact form
-        contact_btn.click(
-            handle_contact_submission, 
-            [name, email, message], 
-            contact_status
+        send_button.click(
+            fn=chat_wrapper,
+            inputs=[query_input, chatbot_window],
+            outputs=[query_input, chatbot_window]
+        )
+        query_input.submit(
+            fn=chat_wrapper,
+            inputs=[query_input, chatbot_window],
+            outputs=[query_input, chatbot_window]
         )
 
-        # Initial data load for tabs
-        demo.load(update_profile, outputs=[summary_md, skills_categorized_md, projects_md, experience_md, education_md])
-        demo.load(update_analytics, outputs=[daily_interactions_plot, hourly_activity_plot, frequent_queries_plot])
-
-        # Refresh analytics when the dashboard tab is selected or the refresh button is clicked
         dashboard_tab_item.select(
-            fn=update_analytics, 
+            fn=update_analytics,
             outputs=[daily_interactions_plot, hourly_activity_plot, frequent_queries_plot]
         )
         refresh_button.click(
-            fn=update_analytics, 
+            fn=update_analytics,
             outputs=[daily_interactions_plot, hourly_activity_plot, frequent_queries_plot]
         )
-    
-    # Launch the Gradio app
-    demo.launch(server_name="0.0.0.0")
+
+        # Pre-load profile data when its tab is selected
+        profile_tab.select(
+            fn=update_profile,
+            outputs=[
+                summary_md, skills_md, experience_md, education_md, projects_md,
+                lang_skills, backend_skills, frontend_skills, data_skills, devops_skills, cloud_skills
+            ]
+        )
+
+        contact_btn.click(
+            fn=handle_contact_submission,
+            inputs=[name, email, message],
+            outputs=contact_status
+        )
+
+    return demo
 
 def main():
-    # Initialize and launch the Gradio interface
-    client = CareerAssistantClient()
-    demo = create_gradio_interface(client)
-    # Launch the Gradio app with server_name="0.0.0.0" to be accessible externally
-    demo.launch(server_name="0.0.0.0")
+    """Initialize and launch the Gradio interface with a retry mechanism."""
+    client = None
+    max_retries = 5
+    retry_delay = 3  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Attempt {attempt + 1}/{max_retries} to connect to the gRPC server...")
+            # Check if the server is ready
+            channel = grpc.insecure_channel('localhost:50051')
+            grpc.channel_ready_future(channel).result(timeout=retry_delay)
+            
+            logger.info("✅ gRPC server is ready.")
+            client = CareerAssistantClient()
+            break  # Exit loop on successful connection
+        except (grpc.FutureTimeoutError, grpc.RpcError) as e:
+            logger.warning(f"Connection failed. Retrying in {retry_delay} seconds... Error: {e}")
+            if attempt + 1 == max_retries:
+                logger.critical("❌ Could not connect to gRPC server after multiple retries. Exiting.")
+                # Display a user-friendly error in the UI if possible
+                with gr.Blocks() as demo:
+                    gr.Markdown("#  критическая ошибка\nНе удалось подключиться к серверу AI. Пожалуйста, перезапустите приложение.")
+                demo.launch(server_name="0.0.0.0")
+                return
+            time.sleep(retry_delay)
+
+    if client:
+        demo = create_gradio_interface(client)
+        demo.launch(server_name="0.0.0.0")
 
 if __name__ == "__main__":
     main()
