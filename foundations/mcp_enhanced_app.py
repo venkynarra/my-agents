@@ -147,14 +147,14 @@ class CareerAssistantClient:
         """Submits the contact form to the gRPC server."""
         if not self.stub:
             logger.warning("gRPC stub not initialized. Cannot submit contact form.")
-            return f"Error: Could not submit form. gRPC stub not initialized."
+            return {"success": False, "message": "Error: Could not submit form. gRPC stub not initialized."}
         try:
             request = career_assistant_pb2.ContactFormRequest(name=name, email=email, message=message)
             response = self.stub.SubmitContactForm(request)
-            return response.message
+            return {"success": response.success, "message": response.message}
         except grpc.RpcError as e:
             logger.error(f"gRPC error on contact form: {e.details()} (code: {e.code().name})")
-            return f"Error: Could not submit form. {e.details()}"
+            return {"success": False, "message": f"Error: Could not submit form. {e.details()}"}
 
 # --- Gradio Interface ---
 def create_gradio_interface(client: CareerAssistantClient):
@@ -279,7 +279,7 @@ def create_gradio_interface(client: CareerAssistantClient):
                                     email = gr.Textbox(label="Your Email")
                                     message = gr.Textbox(label="Message", lines=4)
                                     contact_btn = gr.Button("Send", variant="primary")
-                                contact_status = gr.Markdown(visible=False)
+                                contact_status = gr.Markdown(visible=True, value="")
                             with gr.Column():
                                 gr.Markdown("### Schedule a Meeting")
                                 gr.Markdown("Or schedule a 30-minute meeting with me directly via Calendly:")
@@ -302,9 +302,35 @@ def create_gradio_interface(client: CareerAssistantClient):
             history.append({"role": "assistant", "content": response})
             return "", history
 
-        async def handle_contact_submission(name_val, email_val, msg_val):
+        def handle_contact_submission(name_val, email_val, msg_val):
             """Handles the submission of the contact form."""
-            return client.submit_contact_form(name_val, email_val, msg_val)
+            try:
+                # Validate inputs
+                if not name_val.strip():
+                    return "❌ Please enter your name."
+                if not email_val.strip():
+                    return "❌ Please enter your email address."
+                if not msg_val.strip():
+                    return "❌ Please enter a message."
+                
+                # Basic email validation
+                import re
+                email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+                if not re.match(email_pattern, email_val.strip()):
+                    return "❌ Please enter a valid email address."
+                
+                # Submit the form
+                result = client.submit_contact_form(name_val, email_val, msg_val)
+                
+                # Check if submission was successful
+                if result["success"]:
+                    return f"✅ **Success!** Thank you {name_val}! Your message has been sent successfully. You should receive a confirmation email at {email_val} shortly."
+                else:
+                    return f"❌ **Error:** {result['message']}"
+                    
+            except Exception as e:
+                logger.error(f"Error in contact form submission: {e}")
+                return "❌ **Error:** There was an issue sending your message. Please try again or contact directly via email."
 
         def update_profile():
             """Loads actual content from knowledge files and formats it for the profile UI."""
@@ -469,10 +495,20 @@ def create_gradio_interface(client: CareerAssistantClient):
             ]
         )
 
+        def handle_contact_with_form_reset(name_val, email_val, msg_val):
+            """Handle contact submission and clear form on success."""
+            result = handle_contact_submission(name_val, email_val, msg_val)
+            
+            # If successful, clear the form fields
+            if "Success!" in result:
+                return result, "", "", ""  # Clear name, email, message
+            else:
+                return result, name_val, email_val, msg_val  # Keep values on error
+        
         contact_btn.click(
-            fn=handle_contact_submission,
+            fn=handle_contact_with_form_reset,
             inputs=[name, email, message],
-            outputs=contact_status
+            outputs=[contact_status, name, email, message]
         )
 
     return demo

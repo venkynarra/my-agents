@@ -20,8 +20,8 @@ DATABASE_URL = f"sqlite:///{PROJECT_ROOT / 'foundations' / 'career_analytics.db'
 SENDGRID_API_KEY = os.getenv("SENDGRID_API_KEY")
 
 # Email addresses for contact form submissions
-SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL")
+SENDER_EMAIL = os.getenv("FROM_EMAIL")  # Use FROM_EMAIL from .env
+RECIPIENT_EMAIL = os.getenv("TO_EMAIL")  # Use TO_EMAIL from .env
 FROM_EMAIL = os.getenv("FROM_EMAIL")
 
 # Google AI Configuration
@@ -43,7 +43,7 @@ DASHBOARD_IMAGE_B64 = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA
 
 # Your Calendly link for the "Schedule a Meeting" button.
 # (https://calendly.com/)
-CALENDLY_LINK = os.getenv("CALENDLY_LINK", "https://calendly.com/your-link")
+CALENDLY_LINK = os.getenv("CALENDLY_LINK", "https://calendly.com/venkateshnarra368")
 
 # --- Validation ---
 def validate_config():

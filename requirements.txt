@@ -35,3 +35,28 @@ llama-index
 llama-index-llms-gemini
 llama-index-embeddings-huggingface
 llama-index-vector-stores-faiss
+
+# Enhanced Architecture Dependencies
+rapidfuzz>=3.5.0  # Fast fuzzy string matching for preprocessing
+pinecone-client>=2.2.0  # Pinecone vector database
+redis>=5.0.0  # Redis caching layer
+aioredis>=2.0.0  # Async Redis client
+pinecone-text>=0.7.0  # Pinecone text utilities
+grpcio-status>=1.58.0  # Enhanced gRPC status handling
+
+# ONNX and Local Model Support
+onnxruntime>=1.16.0  # ONNX runtime for quantized models
+onnxruntime-gpu>=1.16.0  # GPU support for ONNX (optional)
+transformers>=4.35.0  # Hugging Face transformers for LoRA
+accelerate>=0.24.0  # Model acceleration
+torch>=2.0.0  # PyTorch for model loading
+peft>=0.6.0  # Parameter-Efficient Fine-Tuning (LoRA)
+
+# Performance and Concurrency
+asyncio-mqtt>=0.13.0  # Async utilities
+concurrent-futures>=3.1.1  # Thread pool executor
+aiocache>=0.12.0  # Async caching utilities
+
+# Text Processing and Intent Classification
+spacy>=3.7.0  # Advanced NLP for intent classification
+scikit-learn>=1.3.0  # ML utilities for classification

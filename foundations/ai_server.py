@@ -16,13 +16,12 @@ from google.protobuf import empty_pb2
 # Health check imports
 from grpc_health.v1 import health, health_pb2, health_pb2_grpc
 
-# LlamaIndex and Gemini
-from llama_index.core.agent import ReActAgent
-from llama_index.llms.gemini import Gemini
-from llama_index.core.tools import FunctionTool
+# Smart Router
+from .smart_router import MultiAgentSmartRouter
 
 # MCP Client
 from .mcp_client import create_mcp_client, MCPClient
+from .simple_mcp_client import create_simple_mcp_client
 
 # Database and Email utilities
 from .db_utils import log_interaction, fetch_all_interactions, initialize_db
@@ -36,81 +35,88 @@ load_dotenv(override=True)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-async def convert_mcp_tool_to_llama_tool(mcp_tool, mcp_client):
-    """Convert an MCP tool to a LlamaIndex FunctionTool."""
-    
-    def create_async_function(tool):
-        async def dynamic_func(**kwargs):
-            logger.info(f"Calling MCP Tool '{tool['name']}' with args: {kwargs}")
-            try:
-                result = await mcp_client.call_tool(tool["name"], kwargs)
-                
-                # Handle the MCP response format
-                if "content" in result and isinstance(result["content"], list):
-                    # Extract text from content array
-                    content_text = ""
-                    for item in result["content"]:
-                        if item.get("type") == "text":
-                            content_text += item.get("text", "")
-                    
-                    # Try to parse as JSON if possible
-                    try:
-                        return json.loads(content_text)
-                    except json.JSONDecodeError:
-                        return {"result": content_text}
-                else:
-                    return result
-                    
-            except Exception as e:
-                logger.error(f"Tool '{tool['name']}' error: {e}")
-                return {"error": str(e)}
 
-        dynamic_func.__name__ = tool["name"]
-        dynamic_func.__doc__ = tool.get("description", "")
-        return dynamic_func
-
-    llama_tool = FunctionTool.from_defaults(
-        fn=create_async_function(mcp_tool),
-        name=mcp_tool["name"],
-        description=mcp_tool.get("description", "")
-    )
-    
-    return llama_tool
 
 class CareerAssistantService(career_assistant_pb2_grpc.CareerAssistantServicer):
+    """Enhanced gRPC service with MCP-integrated smart routing."""
+    
     def __init__(self):
-        self.agent: ReActAgent | None = None
-        # Initialize database
-        try:
-            initialize_db()
-        except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
+        self.router = None
+        self.mcp_client = None
+        self.service_ready = False
+        self.initialization_lock = asyncio.Lock()
+        
+    async def initialize(self):
+        """Initialize the smart router with MCP client."""
+        async with self.initialization_lock:
+            if self.router is None:
+                try:
+                    logger.info("🚀 Initializing MCP-Enhanced Smart Query Router...")
+                    
+                    # Try to create MCP client with fallback to simple client
+                    try:
+                        self.mcp_client = await asyncio.wait_for(
+                            create_mcp_client("career-assistant"),
+                            timeout=15.0  # Reduced timeout for first attempt
+                        )
+                        if self.mcp_client:
+                            logger.info("✅ MCP client created successfully")
+                        else:
+                            logger.warning("⚠️ MCP client creation returned None, trying simple fallback")
+                            self.mcp_client = await create_simple_mcp_client("career-assistant")
+                            if self.mcp_client:
+                                logger.info("✅ Simple MCP client created successfully as fallback")
+                            else:
+                                logger.warning("⚠️ Both MCP clients failed, router will work without tools")
+                    except asyncio.TimeoutError:
+                        logger.warning("⚠️ MCP client creation timed out, trying simple fallback")
+                        try:
+                            self.mcp_client = await create_simple_mcp_client("career-assistant")
+                            if self.mcp_client:
+                                logger.info("✅ Simple MCP client created successfully as fallback")
+                            else:
+                                logger.warning("⚠️ Simple MCP client also failed, router will work without tools")
+                        except Exception as e2:
+                            logger.warning(f"⚠️ Simple MCP client also failed: {e2}")
+                            self.mcp_client = None
+                    except Exception as e:
+                        logger.warning(f"⚠️ MCP client creation failed: {e}, trying simple fallback")
+                        try:
+                            self.mcp_client = await create_simple_mcp_client("career-assistant")
+                            if self.mcp_client:
+                                logger.info("✅ Simple MCP client created successfully as fallback")
+                            else:
+                                logger.warning("⚠️ Simple MCP client also failed, router will work without tools")
+                        except Exception as e2:
+                            logger.warning(f"⚠️ Simple MCP client also failed: {e2}")
+                            self.mcp_client = None
+                    
+                    # Initialize router with or without MCP
+                    self.router = MultiAgentSmartRouter(mcp_client=self.mcp_client)
+                    logger.info("✅ MCP-Enhanced Smart Query Router initialized successfully")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Router initialization failed: {e}")
+                    # Fallback to basic router
+                    self.router = MultiAgentSmartRouter(mcp_client=None)
+                    logger.info("✅ Fallback router initialized without MCP tools")
+                
+                self.service_ready = True
+
 
     async def ProcessQuery(self, request, context):
-        if self.agent is None:
-            logger.error("💥 Agent is None - this should not happen after proper initialization!")
+        if self.router is None:
+            logger.error("💥 Router is None - this should not happen after proper initialization!")
             context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details("Agent initialization failed. Please restart the service.")
+            context.set_details("Router initialization failed. Please restart the service.")
             return career_assistant_pb2.QueryResponse()
 
         query_text = request.query
-        logger.info(f"🤖 Agent received query: '{query_text}'")
+        logger.info(f"🚀 Smart Router received query: '{query_text}'")
 
         try:
-            # Enhanced prompt with knowledge base context
-            instructed_query = (
-                "You are Venkatesh Narra speaking directly. Respond as if you're having a natural conversation. "
-                "Use 'I', 'my', 'me' throughout your responses. Be conversational and authentic. "
-                "Here's my background: I'm a full-stack developer with 4+ years of experience. "
-                "I currently work at Veritis Group Inc as a Software Development Engineer. Previously, I worked at TCS and Virtusa. "
-                "I have a Master's in Computer Science from George Mason University (2022-2024) and a B.Tech from GITAM University (2018-2022). "
-                "My expertise includes Python, Java, JavaScript, React, Node.js, AWS, Docker, Kubernetes, and AI/ML with TensorFlow and PyTorch. "
-                "I've built AI-powered testing agents, clinical decision support tools, loan origination platforms, and various web applications. "
-                "I'm passionate about solving complex problems and building scalable solutions. "
-                f"Question: {query_text}"
-            )
-            response = await self.agent.achat(instructed_query)
-            response_text = str(response)
+            # Use smart router for fast, accurate responses
+            response_text = await self.router.route_query(query_text)
             
             # Log the interaction
             try:
@@ -120,7 +126,7 @@ class CareerAssistantService(career_assistant_pb2_grpc.CareerAssistantServicer):
             
             return career_assistant_pb2.QueryResponse(response=response_text)
         except Exception as e:
-            logger.error(f"💥 Error during agent query processing: {e}", exc_info=True)
+            logger.error(f"💥 Error during query processing: {e}", exc_info=True)
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(f"An internal error occurred: {e}")
             return career_assistant_pb2.QueryResponse()
@@ -210,18 +216,14 @@ class CareerAssistantService(career_assistant_pb2_grpc.CareerAssistantServicer):
     async def GenerateProfile(self, request, context):
         """Generate a professional profile summary."""
         try:
-            if self.agent is None:
+            if self.router is None:
                 context.set_code(grpc.StatusCode.UNAVAILABLE)
-                context.set_details("The AI agent is still initializing. Please try again in a moment.")
+                context.set_details("The Smart Router is still initializing. Please try again in a moment.")
                 return career_assistant_pb2.ProfileResponse()
 
-            profile_query = (
-                "Generate a comprehensive professional profile summary for Venkatesh Narra. "
-                "Include key skills, experience, achievements, and what makes him unique as a "
-                "Full-Stack Python Developer and AI/ML Engineer. Write in the first person."
-            )
+            profile_query = "Generate a comprehensive professional profile summary about myself"
             
-            response = await self.agent.achat(profile_query)
+            response = await self.router.route_query(profile_query)
             
             return career_assistant_pb2.ProfileResponse(content=str(response))
         except Exception as e:
@@ -230,42 +232,48 @@ class CareerAssistantService(career_assistant_pb2_grpc.CareerAssistantServicer):
             context.set_details(f"An internal error occurred: {e}")
             return career_assistant_pb2.ProfileResponse(content="Error generating profile.")
 
-async def initialize_agent(service: CareerAssistantService, health_servicer: health.HealthServicer):
+async def initialize_router(service: CareerAssistantService, health_servicer: health.HealthServicer):
     # Mark as serving IMMEDIATELY to pass health checks
     health_servicer.set("foundations.CareerAssistantService", health_pb2.HealthCheckResponse.SERVING)
     logger.info("✅ Backend marked as SERVING immediately.")
     
     try:
-        logger.info("🚀 Initializing Agent and its tools (MCP Client)...")
+        logger.info("🚀 Initializing Smart Query Router...")
         
-        # Create MCP client with proper timeout and error handling
-        mcp_client = await create_mcp_client("career-assistant")
-        
-        # Get MCP tools
-        mcp_tools = await mcp_client.list_tools()
-        logger.info(f"✅ MCP client created, found {len(mcp_tools)} tools.")
-        
-        # Convert MCP tools to LlamaIndex tools
-        llama_tools = []
-        for mcp_tool in mcp_tools:
+        # Create MCP client for tool support (optional)
+        try:
+            mcp_client = await create_mcp_client("career-assistant")
+            if mcp_client:
+                logger.info("✅ MCP client created for router tool support.")
+            else:
+                logger.warning("⚠️ MCP client creation returned None, trying simple fallback")
+                mcp_client = await create_simple_mcp_client("career-assistant")
+                if mcp_client:
+                    logger.info("✅ Simple MCP client created for router tool support.")
+                else:
+                    logger.warning("⚠️ Both MCP clients failed, router will work without tools")
+        except Exception as e:
+            logger.warning(f"⚠️ MCP client creation failed: {e}, trying simple fallback")
             try:
-                llama_tool = await convert_mcp_tool_to_llama_tool(mcp_tool, mcp_client)
-                llama_tools.append(llama_tool)
-                logger.info(f"✅ Converted MCP tool: {mcp_tool['name']}")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to convert MCP tool {mcp_tool['name']}: {e}")
+                mcp_client = await create_simple_mcp_client("career-assistant")
+                if mcp_client:
+                    logger.info("✅ Simple MCP client created for router tool support.")
+                else:
+                    logger.warning("⚠️ Simple MCP client also failed, router will work without tools")
+            except Exception as e2:
+                logger.warning(f"⚠️ Simple MCP client also failed: {e2}")
+                mcp_client = None
         
-        # Create the agent with MCP tools
-        llm = Gemini(model_name="gemini-1.5-pro-latest", api_key=GEMINI_API_KEY)
-        service.agent = ReActAgent.from_tools(llama_tools, llm=llm, verbose=True)
+        # Initialize service with MCP client
+        await service.initialize()
         
-        logger.info(f"✅ Agent initialized successfully with {len(llama_tools)} tools.")
+        logger.info("✅ Multi-Agent Smart Router initialized successfully.")
         
     except Exception as e:
-        logger.error(f"❌ Failed to initialize MCP agent: {e}")
+        logger.error(f"❌ Failed to initialize Smart Router: {e}")
         # Mark as NOT serving since we failed to initialize properly
         health_servicer.set("foundations.CareerAssistantService", health_pb2.HealthCheckResponse.NOT_SERVING)
-        raise RuntimeError(f"Failed to initialize MCP agent: {e}")
+        raise RuntimeError(f"Failed to initialize Smart Router: {e}")
 
 async def main():
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
@@ -283,7 +291,7 @@ async def main():
     health_servicer.set("", health_pb2.HealthCheckResponse.SERVING)
     
 
-    init_task = asyncio.create_task(initialize_agent(service, health_servicer))
+    init_task = asyncio.create_task(initialize_router(service, health_servicer))
 
     try:
         await server.wait_for_termination()

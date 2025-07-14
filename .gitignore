@@ -1,15 +1,92 @@
+# Virtual Environment
 .venv/
+venv/
+env/
+
+# Environment Variables
 .env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Python Cache
 __pycache__/
 *.pyc
-response_cache.db
+*.pyo
+*.pyd
+.Python
+*.so
+.coverage
+.pytest_cache/
+.cache/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+backend.*.log
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+foundations/career_analytics.db
 
 # LlamaIndex and RAG artifacts
 rag_index/
 foundations/rag_index/
+vector_store/
+.llamaindex/
 
-# Database files
-foundations/career_analytics.db
+# AI Model Cache
+.cache/
+models/
+.transformers/
+.sentence_transformers/
 
-# Log files
-*.log
+# Gradio Cache
+.gradio/
+gradio_cached_examples/
+
+# Lock files (can be regenerated)
+uv.lock
+poetry.lock
+Pipfile.lock
+
+# Test files and outputs
+test_*.py
+*_test.py
+test_results.json
+test_*.json
+coverage.xml
+.coverage
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Response cache
+response_cache.db
+
+# Large dependency files that can be regenerated
+node_modules/
+.npm/

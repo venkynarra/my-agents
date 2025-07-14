@@ -66,5 +66,5 @@ I am a full-stack developer with over four years of experience building and depl
 ---
 
 ## Education
-*   **Master of Science, Computer Science** - George Mason University (Aug 2022 - May 2024)
-*   **Bachelor of Technology, Computer Science** - GITAM Deemed University (Jun 2017 - May 2021)
+*   **Master of Science, Computer Science** - George Mason University, Virginia, USA (Aug 2022 - May 2024, GPA: 3.8/4.0)
+*   **Bachelor of Technology, Computer Science** - GITAM Deemed University, Visakhapatnam, India (Jun 2017 - May 2021, GPA: 3.7/4.0)

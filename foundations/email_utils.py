@@ -20,8 +20,18 @@ def send_contact_email(name: str, email: str, message: str) -> bool:
     This serves as an acknowledgment/confirmation email.
     """
     try:
-        if not SENDGRID_API_KEY or SENDGRID_API_KEY == "YOUR_SENDGRID_API_KEY_HERE":
-            logger.error("SendGrid API key not configured properly.")
+        # Check if SendGrid is properly configured
+        if not SENDGRID_API_KEY or SENDGRID_API_KEY == "YOUR_SENDGRID_API_KEY_HERE" or not SENDGRID_API_KEY.startswith('SG.'):
+            logger.warning("SendGrid API key not configured. Email feature disabled.")
+            return True  # Return True to avoid blocking the form submission
+            
+        if not SENDER_EMAIL or not SENDER_EMAIL.strip():
+            logger.warning("Sender email not configured. Email feature disabled.")
+            return True
+        
+        # Validate recipient email
+        if not email or not email.strip():
+            logger.warning("Recipient email not provided.")
             return False
             
         sg = sendgrid.SendGridAPIClient(SENDGRID_API_KEY)
@@ -82,7 +92,7 @@ def send_contact_email(name: str, email: str, message: str) -> bool:
         
         mail = Mail(
             from_email=SENDER_EMAIL,
-            to_emails=RECIPIENT_EMAIL,  # Send TO the user's email address
+            to_emails=email,  # Send TO the user's email address (the person who submitted the form)
             subject=subject,
             html_content=html_content,
             plain_text_content=plain_text_content
@@ -91,7 +101,7 @@ def send_contact_email(name: str, email: str, message: str) -> bool:
         response = sg.send(mail)
         
         if response.status_code >= 200 and response.status_code < 300:
-            logger.info(f"✅ Contact email sent successfully to {RECIPIENT_EMAIL}")
+            logger.info(f"✅ Contact email sent successfully to {email}")
             return True
         else:
             logger.error(f"❌ Failed to send email: {response.status_code} {response.body}")

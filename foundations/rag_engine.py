@@ -2,9 +2,13 @@
 import logging
 from pathlib import Path
 import asyncio
-
 import os
+from typing import Optional
 import faiss
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 from llama_index.core import (
     VectorStoreIndex,
     SimpleDirectoryReader,
@@ -25,8 +29,8 @@ logger = logging.getLogger(__name__)
 # This sets up the models and configuration that will be used throughout the engine.
 Settings.llm = Gemini(model_name="gemini-1.5-pro-latest")
 Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
-Settings.chunk_size = 1024
-Settings.chunk_overlap = 200
+Settings.chunk_size = 512  # Smaller chunks for faster processing
+Settings.chunk_overlap = 100  # Reduce overlap for speed
 
 async def build_knowledge_index(knowledge_base_path: Path, index_path: Path):
     """
@@ -108,10 +112,11 @@ async def query_knowledge_index(rag_engine: VectorStoreIndex, query_text: str):
         )
         qa_template = PromptTemplate(qa_prompt_template)
         
-        # Create a query engine with the custom prompt
+        # Create a query engine with the custom prompt - optimized for speed
         query_engine = rag_engine.as_query_engine(
             text_qa_template=qa_template,
-            similarity_top_k=3
+            similarity_top_k=2,  # Fewer results for faster processing
+            response_mode="compact"  # More concise processing
         )
         
         # Perform the query
@@ -146,3 +151,18 @@ async def generate_profile_summary(rag_engine: VectorStoreIndex) -> str:
     except Exception as e:
         logger.error(f"💥 Error during profile generation: {e}", exc_info=True)
         return "Error: Could not generate the profile."
+
+async def create_llm_client(api_key: Optional[str] = None) -> Gemini:
+    """Create a Gemini LLM client for use in the enhanced router."""
+    effective_api_key = api_key or os.getenv("GEMINI_API_KEY")
+    
+    if not effective_api_key:
+        logger.warning("No Gemini API key provided")
+        raise ValueError("Gemini API key is required")
+    
+    return Gemini(
+        model_name="gemini-1.5-flash",
+        api_key=effective_api_key,
+        temperature=0.3,
+        max_tokens=1000
+    )
