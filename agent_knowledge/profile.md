@@ -1,6 +1,6 @@
 
 # Venkateswara Rao Narra
-**Contact:** vnarrag@gmu.edu | +1 703-453-2157 | [LinkedIn](https://www.linkedin.com/in/venkateswara-narra-91170b34a) | [GitHub](https://github.com/venkynarra) | [LeetCode](https://leetcode.com/u/pravnarri/)
+**Contact:** vnarra@gmu.edu | +1 703-453-2157 | [LinkedIn](https://www.linkedin.com/in/venkateswara-narra-91170b34a) | [GitHub](https://github.com/venkynarra) | [LeetCode](https://leetcode.com/u/pravnarri/)
 
 ---
 

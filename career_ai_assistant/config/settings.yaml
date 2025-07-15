@@ -1,0 +1,82 @@
+# Career AI Assistant Configuration
+
+# API Keys (loaded from environment variables)
+api_keys:
+  gemini: "${GEMINI_API_KEY}"
+  pinecone: "${PINECONE_API_KEY}"
+  sendgrid: "${SENDGRID_API_KEY}"
+
+# Email Configuration
+email:
+  from_email: "${FROM_EMAIL}"
+  to_email: "${TO_EMAIL}"
+  sendgrid_api_key: "${SENDGRID_API_KEY}"
+
+# Google Calendar Integration
+google:
+  api_key: "${GOOGLE_API_KEY}"
+  client_id: "${GOOGLE_CLIENT_ID}"
+  client_secret: "${GOOGLE_CLIENT_SECRET}"
+  redirect_uris: "${GOOGLE_REDIRECT_URIS}"
+  calendar_email: "${CALENDAR_EMAIL}"
+
+# Redis Configuration
+redis:
+  url: "redis://localhost:6379/0"
+  pool_size: 10
+  timeout: 5.0
+  retry_on_timeout: true
+  socket_connect_timeout: 2.0
+  socket_timeout: 2.0
+
+# Model Configuration
+models:
+  gemini:
+    model_name: "gemini-1.5-flash"
+    temperature: 0.7
+    max_tokens: 1024
+    timeout: 5.0
+  
+  onnx:
+    model_path: "models/gemma-2b-lora.onnx"
+    max_length: 512
+    temperature: 0.8
+
+# Pinecone Configuration
+pinecone:
+  api_key: "${PINECONE_API_KEY}"
+  environment: "us-west1-gcp"
+  index_name: "career-assistant"
+  dimension: 1536
+
+# Performance Thresholds
+performance:
+  max_response_time: 2.0
+  cache_ttl: 3600
+  similarity_threshold: 0.8
+  fallback_timeout: 3.0
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  file: "career_ai.log"
+  max_file_size: "10MB"
+  backup_count: 5
+
+# Knowledge Base
+knowledge:
+  base_path: "../agent_knowledge"
+  chunk_size: 1000
+  overlap: 200
+  max_chunks: 5
+
+# UI Configuration
+ui:
+  port: 7861
+  host: "0.0.0.0"
+  share: false
+  debug: false
+
+# Scheduling
+scheduling:
+  calendly_link: "https://calendly.com/venkateshnarra368" 
